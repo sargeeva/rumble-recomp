@@ -1,0 +1,51 @@
+[package]
+name = "rumble-port"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rumble-formats = { path = "../rumble-formats" }
+rumble-recomp = { path = "../rumble-recomp" }
+rumble-runtime = { path = "../rumble-runtime" }
+rumble-blocks = { path = "../rumble-blocks" }
+rumble-jit = { path = "../rumble-jit", optional = true }
+anyhow = "1"
+crc32fast = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+wgpu = "25.0.2"
+winit = "0.30.11"
+pollster = "0.4.0"
+bytemuck = "1.23.1"
+png = "0.17.16"
+rfd = "0.15"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+gilrs = "0.11.0"
+cpal = "0.15.3"
+egui = "0.32.0"
+egui-wgpu = "0.32.0"
+egui-winit = "0.32.0"
+eframe = { version = "0.32.3", default-features = false, features = ["wgpu", "default_fonts"] }
+
+[build-dependencies]
+png = "0.17.16"
+
+[features]
+# `--jit`: translate the game's code with Cranelift at load time. Off by
+# default: linking Cranelift in costs the Rust blocks about 2% (code layout).
+default = []
+jit = ["dep:rumble-jit"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+] }

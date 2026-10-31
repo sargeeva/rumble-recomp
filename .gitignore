@@ -1,0 +1,16 @@
+/target
+/keys/
+/build
+*.wad
+*.bps
+# The verified build Play.bat runs: contains code compiled from the game.
+/dist
+/dist-previous
+/release
+# Rumble Weekend's patches and readme are its authors'; setup downloads them.
+/mods/
+/Weekend Edition 1.5/
+# Local settings and launcher.
+/config.toml
+/Play.bat
+*.pdb

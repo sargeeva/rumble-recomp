@@ -1,0 +1,9 @@
+[package]
+name = "rumble-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rumble-formats = { path = "../rumble-formats" }
+rumble-recomp = { path = "../rumble-recomp" }

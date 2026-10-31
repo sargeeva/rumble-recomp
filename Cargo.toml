@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/rumble-formats", "crates/rumble-recomp", "crates/rumble-runtime", "crates/rumble-blocks", "crates/rumble-jit", "crates/rumble-port"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Function names in the PDB for `boot --profile`, without changing the
+# optimized code. The generated blocks stay without: they are many, and the
+# profiler finds them through the block table instead.
+[profile.release.package.rumble-runtime]
+debug = "line-tables-only"
+
+[profile.release.package.rumble-port]
+debug = "line-tables-only"
