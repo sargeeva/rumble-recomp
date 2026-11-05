@@ -35,6 +35,8 @@ pub struct State {
     pub weekend: bool,
     /// The shiny count is answered (`super::playinfo::install`).
     pub shiny_count: bool,
+    /// The addons the player picked (`super::addons`).
+    pub addons: super::addons::Addons,
     /// The title copyright's length in characters, until the "Recomped"
     /// line is added to it (`super::title`).
     pub title_note: Option<u32>,
@@ -115,6 +117,7 @@ pub fn unpacked(mem: &mut Memory, dst: u32, out: &mut [u8]) {
         return;
     }
     super::title::unpacked(mem, out);
+    super::addons::unpacked(mem, out);
     if mem.multiplay.weekend {
         super::playinfo::unpacked(mem, out);
     }

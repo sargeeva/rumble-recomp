@@ -9,6 +9,7 @@
 //! each replaced entry is a second trap, `GuestReturn`, which the guest
 //! function returns to.
 
+pub mod addons;
 mod cx;
 pub mod multiplay;
 mod playinfo;

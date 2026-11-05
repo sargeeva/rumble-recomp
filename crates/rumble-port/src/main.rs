@@ -175,7 +175,7 @@ fn main() -> Result<()> {
                 None => remote::Recording::default(),
             };
             let original_multiplayer = cfg.game.original_multiplayer;
-            let opts = boot::Options { no_trace, capture, exec, profile, replay, widescreen, wav, threaded, original_multiplayer };
+            let opts = boot::Options { no_trace, capture, exec, profile, replay, widescreen, wav, threaded, original_multiplayer, addons: cfg.addons.runtime() };
             boot::run(&cfg.paths.build_dir, steps, dump, &press, &opts)
         }
         Cmd::Run { press, interp, jit } => run::run(cfg, &cli.config, press, boot::Exec::new(interp, false, jit)),

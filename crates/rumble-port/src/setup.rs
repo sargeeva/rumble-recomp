@@ -325,6 +325,8 @@ struct SetupApp {
     /// How choosing Rumble Weekend's zip went.
     weekend_note: Option<(String, bool)>,
     patches: Vec<PathBuf>,
+    /// Addons for Rumble Weekend builds (`[addons]`).
+    addons: crate::config::AddonsConfig,
     /// What the chosen WAD is, or what is wrong with it.
     wad_note: Option<(String, bool)>,
     job: Option<Arc<Mutex<Job>>>,
@@ -339,6 +341,7 @@ impl SetupApp {
             key: if cfg.paths.common_key.is_file() { cfg.paths.common_key.display().to_string() } else { String::new() },
             weekend: cfg.mods.enabled.iter().any(|m| m == WEEKEND),
             patches: cfg.mods.patches.clone(),
+            addons: cfg.addons.clone(),
             weekend_label,
             weekend_note: None,
             wad_note: None,
@@ -379,6 +382,7 @@ impl SetupApp {
             self.cfg.mods.enabled.push(WEEKEND.to_string());
         }
         self.cfg.mods.patches = req.patches.clone();
+        self.cfg.addons = self.addons.clone();
         let _ = self.cfg.save(&self.config_path);
 
         let job = Arc::new(Mutex::new(Job::default()));
@@ -477,6 +481,13 @@ impl eframe::App for SetupApp {
                     Some((note, false)) => ui.colored_label(egui::Color32::LIGHT_RED, note),
                     None => ui.label(""),
                 };
+                if self.weekend {
+                    ui.indent("addons", |ui| {
+                        ui.label("Addons:");
+                        ui.checkbox(&mut self.addons.custom_sparkle, "Custom sparkling effect")
+                            .on_hover_text("Shiny Pokémon sparkle with stars, in yellow and cyan, at random angles.");
+                    });
+                }
 
                 ui.add_space(10.0);
                 ui.label("Other patches (.bps), applied in this order:");
@@ -549,7 +560,7 @@ fn setup_icon() -> egui::IconData {
 pub fn run_app(cfg: Config, config_path: PathBuf) -> Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([600.0, 420.0])
+            .with_inner_size([600.0, 480.0])
             .with_title("Pokémon Rumble Setup")
             .with_icon(setup_icon()),
         renderer: eframe::Renderer::Wgpu,

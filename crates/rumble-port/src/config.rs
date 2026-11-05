@@ -14,6 +14,7 @@ pub struct Config {
     pub audio: AudioConfig,
     pub game: GameConfig,
     pub mods: ModsConfig,
+    pub addons: AddonsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +37,21 @@ pub struct GameConfig {
 impl Default for GameConfig {
     fn default() -> Self {
         Self { pause_in_background: false, threaded_graphics: true, show_fps: false, original_multiplayer: false }
+    }
+}
+
+/// Optional changes picked in setup, for Rumble Weekend builds. Read at
+/// start.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AddonsConfig {
+    /// Shinies sparkle with stars, in yellow and cyan.
+    pub custom_sparkle: bool,
+}
+
+impl AddonsConfig {
+    pub fn runtime(&self) -> rumble_runtime::hle::addons::Addons {
+        rumble_runtime::hle::addons::Addons { custom_sparkle: self.custom_sparkle }
     }
 }
 
@@ -79,6 +95,7 @@ impl Default for Config {
             audio: AudioConfig::default(),
             game: GameConfig::default(),
             mods: ModsConfig::default(),
+            addons: AddonsConfig::default(),
         }
     }
 }

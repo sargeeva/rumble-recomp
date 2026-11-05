@@ -31,6 +31,7 @@ fn cx_secure_uncompress_lh(cpu: &mut Cpu, mem: &mut Memory) -> Result<(), Fault>
     let data = mem.read_bytes(src, src_size)?;
     let result = match lh::decompress(&data) {
         Ok(mut out) => {
+            super::addons::unpacked_file(mem, &mut out);
             super::multiplay::unpacked(mem, dst, &mut out);
             mem.load(dst, &out)?;
             0

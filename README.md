@@ -15,6 +15,7 @@ Windows 10/11, 64-bit. Keyboard, gamepads and remote-held-sideways controls are 
 - Runs at any resolution with a widescreen mode, a separate render thread, and a Cranelift translation of the game's code at load time.
 - Multiplayer isn't implemented. The hub's multiplayer pedestal is Ditto, who says so (and gives a coin once), and the pause menu's Multiplayer entry is hidden. `[game] original_multiplayer = true` in the `config.toml` next to the exe brings both back. See [docs/multiplayer-ditto.md](docs/multiplayer-ditto.md).
 - With Rumble Weekend, the Information podium's Play Info page also counts befriended shinies.
+- With Rumble Weekend, setup offers addons. The first, **Custom sparkling effect**, makes shinies, and the toys they leave, sparkle with yellow and cyan stars at random angles. See [docs/addons.md](docs/addons.md).
 
 ## Layout
 

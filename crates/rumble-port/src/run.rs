@@ -141,8 +141,9 @@ pub fn run(cfg: Config, config_path: &Path, presses: Vec<boot::Press>, exec: boo
         let remotes = remotes.clone();
         let threaded = cfg.game.threaded_graphics;
         let original_multiplayer = cfg.game.original_multiplayer;
+        let addons = cfg.addons.runtime();
         std::thread::Builder::new().name("emulation".into()).spawn(move || loop {
-            let result = emulate(build_dir.clone(), remotes.clone(), &presses, exec, threaded, original_multiplayer, tx.clone(), sound.clone(), &mix, &proxy, &control);
+            let result = emulate(build_dir.clone(), remotes.clone(), &presses, exec, threaded, original_multiplayer, addons, tx.clone(), sound.clone(), &mix, &proxy, &control);
             if control.quit.load(Ordering::Relaxed) || !control.restart.swap(false, Ordering::Relaxed) {
                 if let Err(e) = result {
                     let _ = proxy.send_event(Event::Stopped(format!("{e:#}")));
@@ -195,6 +196,7 @@ fn emulate(
     exec: boot::Exec,
     threaded: bool,
     original_multiplayer: bool,
+    addons: rumble_runtime::hle::addons::Addons,
     tx: SyncSender<Vec<GpuCommand>>,
     sound: Option<Arc<AudioQueue>>,
     mix: &Mix,
@@ -207,6 +209,7 @@ fn emulate(
         let prog = analysis::analyze(&dol);
         let (mut cpu, mut mem) = boot::start(&build_dir, "nand", &dol, &prog)?;
         rumble_runtime::hle::multiplay::configure(&mut mem, original_multiplayer);
+        rumble_runtime::hle::addons::configure(&mut mem, addons);
         boot::install_blocks(&mut cpu, &mut mem, exec, &prog);
         (cpu, mem)
     };
