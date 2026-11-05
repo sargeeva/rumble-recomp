@@ -6,7 +6,7 @@
 //! and the window hands it the next one (`capturing`, `bind_key`,
 //! `bind_pad`); Esc cancels.
 
-use crate::config::Config;
+use crate::config::{Config, Multiplayer};
 use crate::controls::{Action, ControlsConfig, StickTurn};
 use crate::display::{Aspect, NamedResolution, Resolution};
 use winit::event::WindowEvent;
@@ -241,6 +241,7 @@ impl Menu {
         target: &wgpu::TextureView,
         size: (u32, u32),
         cfg: &mut Config,
+        pads: &[String],
         open: bool,
         fps: Option<&str>,
     ) -> Actions {
@@ -251,6 +252,7 @@ impl Menu {
             tab: &mut self.tab,
             capture: &mut self.capture,
             save_status: self.save_status.as_ref(),
+            pads,
             actions: &mut actions,
             open,
             fps,
@@ -293,6 +295,8 @@ struct Page<'a> {
     tab: &'a mut Tab,
     save_status: Option<&'a (String, bool)>,
     capture: &'a mut Option<Capture>,
+    /// The connected gamepads' names, in the order players are given to them.
+    pads: &'a [String],
     actions: &'a mut Actions,
     open: bool,
     fps: Option<&'a str>,
@@ -469,10 +473,35 @@ impl Page<'_> {
             });
             ui.end_row();
         });
+        if self.cfg.game.multiplayer == Multiplayer::Local {
+            ui.add_space(8.0);
+            ui.separator();
+            ui.strong("Players");
+            ui.label("The keyboard is player 1. Each gamepad plays as the player set here.");
+            if self.pads.is_empty() {
+                ui.weak("No gamepads connected.");
+            }
+            let c = &mut self.cfg.controls;
+            egui::Grid::new("players").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
+                for (i, name) in self.pads.iter().enumerate() {
+                    ui.label(format!("{}. {name}", i + 1));
+                    let mut player = c.pad_channel(i) as u8 + 1;
+                    egui::ComboBox::from_id_salt(("pad_player", i)).selected_text(format!("Player {player}")).show_ui(ui, |ui| {
+                        for p in 1..=4 {
+                            if ui.selectable_value(&mut player, p, format!("Player {p}")).changed() {
+                                c.set_pad_player(i, p);
+                                changed = true;
+                            }
+                        }
+                    });
+                    ui.end_row();
+                }
+            });
+        }
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui.button("Reset controls to defaults").clicked() {
-                *c = ControlsConfig::default();
+                self.cfg.controls = ControlsConfig::default();
                 *self.capture = None;
                 changed = true;
             }
@@ -524,6 +553,13 @@ impl Page<'_> {
         ui.add_space(8.0);
         changed |= ui.checkbox(&mut g.show_fps, "Show FPS counter").changed();
         ui.small("The game's frames per second, in the top right corner.");
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label("Multiplayer");
+            changed |= ui.radio_value(&mut g.multiplayer, Multiplayer::Off, "Off").changed();
+            changed |= ui.radio_value(&mut g.multiplayer, Multiplayer::Local, "Local").changed();
+        });
+        ui.small("Local: extra gamepads play as players 2-4 (choose who plays as whom under Controls). The hub's multiplayer pedestal comes back when the game is restarted.");
         self.actions.game_changed |= changed;
 
         ui.add_space(16.0);

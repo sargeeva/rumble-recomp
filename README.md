@@ -13,7 +13,7 @@ Windows 10/11, 64-bit. Keyboard, gamepads and remote-held-sideways controls are 
 ## What's different from the Wii
 
 - Runs at any resolution with a widescreen mode, a separate render thread, and a Cranelift translation of the game's code at load time.
-- Multiplayer isn't implemented. The hub's multiplayer pedestal is Ditto, who says so (and gives a coin once), and the pause menu's Multiplayer entry is hidden. `[game] original_multiplayer = true` in the `config.toml` next to the exe brings both back. See [docs/multiplayer-ditto.md](docs/multiplayer-ditto.md).
+- Local multiplayer: with **Esc → Game → Multiplayer: Local**, extra gamepads play as players 2–4 (who plays as whom is under **Controls → Players**), and the hub has the game's own multiplayer pedestal and the pause menu its Multiplayer entry (after a restart). With multiplayer off, the pedestal is Ditto, who says multiplayer is off (and gives a coin once), and the pause menu's entry is hidden. See [docs/multiplayer-ditto.md](docs/multiplayer-ditto.md). Online play is planned.
 - With Rumble Weekend, the Information podium's Play Info page also counts befriended shinies.
 - With Rumble Weekend, setup offers addons. The first, **Custom sparkling effect**, makes shinies, and the toys they leave, sparkle with yellow and cyan stars at random angles. See [docs/addons.md](docs/addons.md).
 
@@ -77,7 +77,7 @@ With the widescreen hack on, 3D perspective projections get their x scale multip
 
 Done: WAD and BPS handling, extraction, a Gekko interpreter, static recompilation to Rust blocks for development builds and load-time Cranelift translation for releases, IOS/ES/FS, Wii Remote input from keyboard and gamepads, GX to wgpu rendering with widescreen and resolution scaling, AX/DSP audio, save import and export, and the setup app. The details are in [docs/recomp.md](docs/recomp.md).
 
-Not yet: multiplayer, the aux (reverb) buses and Wii Remote speaker, and a few GX features (indirect textures, TEV swap tables, lines and points).
+Not yet: online multiplayer, the aux (reverb) buses and Wii Remote speaker, and a few GX features (indirect textures, TEV swap tables, lines and points).
 
 ## License
 

@@ -27,16 +27,43 @@ pub struct GameConfig {
     pub threaded_graphics: bool,
     /// Show the game's frames per second in the top right corner.
     pub show_fps: bool,
+    /// Multiplayer: off, or local (extra gamepads play as players 2-4).
+    /// With it on, the hub has the game's own multiplayer pedestal and the
+    /// pause menu its Multiplayer entry. Read at start.
+    pub multiplayer: Multiplayer,
     /// Keep the hub's original multiplayer pedestal and its prompt instead
-    /// of Ditto (`docs/multiplayer-ditto.md`). For whoever implements
-    /// multiplayer; the menu doesn't show it. Read at start.
+    /// of Ditto (`docs/multiplayer-ditto.md`) even with multiplayer off.
+    /// The menu doesn't show it. Read at start.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub original_multiplayer: bool,
 }
 
+/// How other players join.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Multiplayer {
+    #[default]
+    Off,
+    /// Players 2-4 on this PC's gamepads.
+    Local,
+}
+
 impl Default for GameConfig {
     fn default() -> Self {
-        Self { pause_in_background: false, threaded_graphics: true, show_fps: false, original_multiplayer: false }
+        Self {
+            pause_in_background: false,
+            threaded_graphics: true,
+            show_fps: false,
+            multiplayer: Multiplayer::Off,
+            original_multiplayer: false,
+        }
+    }
+}
+
+impl GameConfig {
+    /// Whether the game keeps its own multiplayer pedestal and pause entry.
+    pub fn original_pedestal(&self) -> bool {
+        self.original_multiplayer || self.multiplayer != Multiplayer::Off
     }
 }
 

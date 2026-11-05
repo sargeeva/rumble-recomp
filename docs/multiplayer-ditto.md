@@ -1,6 +1,14 @@
 # The hub's multiplayer pedestal is Ditto
 
-Multiplayer isn't implemented in the port. In the hub, the pedestal that starts it (two figures on a round base, with a "Multiplayer" balloon) is replaced by the game's own Ditto, idling. Talking to Ditto shows:
+## Local multiplayer
+
+With `[game] multiplayer = "local"` (**Esc → Game → Multiplayer: Local**), the game keeps its own pedestal and pause menu entry, described below, and extra gamepads play as Wii Remotes 2–4. The keyboard is remote 1. Each gamepad plays as its place in the list of connected pads unless **Controls → Players** sets otherwise (`[controls] pad_players`). Remotes 2–4 count as connected while a gamepad plays as them: the Wii Remote replacements (`hle/wpad.rs`) already answer for every channel, and the game polls them, so a pad that connects mid-game can join at the pedestal's player select. It takes effect when the game restarts, since the pedestal is chosen as the hub's files are unpacked.
+
+Recorded sessions (`build/remote/sessions`) record remote 1 only.
+
+## With multiplayer off
+
+In the hub, the pedestal that starts it (two figures on a round base, with a "Multiplayer" balloon) is replaced by the game's own Ditto, idling. Talking to Ditto shows:
 
 > Sargeeva: Multiplayer has not been implemented yet.
 
@@ -12,7 +20,7 @@ The pause menu's Multiplayer entry is left out too.
 
 ## Bringing back the original
 
-The hidden setting `[game] original_multiplayer` in `config.toml` restores the original pedestal, its "Start multiplayer?" prompt and the pause menu's Multiplayer entry, for whoever implements multiplayer. The menu doesn't show it, and it is only written to the file when it is on. It is read when the game starts:
+Local multiplayer restores the original pedestal, its "Start multiplayer?" prompt and the pause menu's Multiplayer entry. So does the hidden setting `[game] original_multiplayer` in `config.toml`, with multiplayer off. The menu doesn't show it, and it is only written to the file when it is on. It is read when the game starts:
 
 ```toml
 [game]

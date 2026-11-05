@@ -10,7 +10,7 @@
 //! (`remote.rs`) and gets the same speed figures in `status.txt`.
 
 use crate::boot;
-use crate::config::Config;
+use crate::config::{Config, Multiplayer};
 use crate::audio::{Audio, AudioQueue, Mix};
 use crate::controls::{Bindings, Gamepads};
 use crate::display::{Aspect, DisplayConfig, NamedResolution, Resolution};
@@ -24,7 +24,7 @@ use rumble_formats::dol::Dol;
 use rumble_recomp::analysis;
 use rumble_runtime::cpu::{Stop, TB_HZ};
 use rumble_runtime::gx::draw::GpuCommand;
-use rumble_runtime::input::Remotes;
+use rumble_runtime::input::{Remotes, CHANNELS};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -140,7 +140,7 @@ pub fn run(cfg: Config, config_path: &Path, presses: Vec<boot::Press>, exec: boo
         let control = control.clone();
         let remotes = remotes.clone();
         let threaded = cfg.game.threaded_graphics;
-        let original_multiplayer = cfg.game.original_multiplayer;
+        let original_multiplayer = cfg.game.original_pedestal();
         let addons = cfg.addons.runtime();
         std::thread::Builder::new().name("emulation".into()).spawn(move || loop {
             let result = emulate(build_dir.clone(), remotes.clone(), &presses, exec, threaded, original_multiplayer, addons, tx.clone(), sound.clone(), &mix, &proxy, &control);
@@ -172,6 +172,7 @@ pub fn run(cfg: Config, config_path: &Path, presses: Vec<boot::Press>, exec: boo
         control: control.clone(),
         keys: HashSet::new(),
         gamepads: Gamepads::new(),
+        pad_names: Vec::new(),
         focused: true,
         menu_open: false,
         fps: 0.0,
@@ -302,6 +303,9 @@ struct App {
     /// Keyboard keys held down.
     keys: HashSet<KeyCode>,
     gamepads: Gamepads,
+    /// The connected gamepads' names, in the order players are given to
+    /// them, for the menu.
+    pad_names: Vec<String>,
     /// The config's control bindings, ready to look up.
     bindings: Bindings,
     /// Input counts only while the window has focus: gamepads keep their
@@ -400,16 +404,33 @@ impl App {
         self.config.paths.build_dir.join("remote")
     }
 
-    /// Sends what the keyboard and gamepads hold to remote 1 (nothing while
-    /// the menu is open or the window is in the background).
+    /// Sends what the keyboard and gamepads hold to the remotes (nothing
+    /// while the menu is open or the window is in the background). The
+    /// keyboard is remote 1. Gamepads are too, unless local multiplayer is
+    /// on: then each plays as its player (`pad_channel`), and remotes 2-4
+    /// are connected while a gamepad plays as them.
     fn update_input(&mut self) {
-        let bits = if self.menu_open || !self.focused {
-            0
-        } else {
-            let keys = self.keys.iter().fold(0, |acc, &k| acc | self.bindings.key(k));
-            keys | self.gamepads.buttons(&self.bindings)
-        };
-        self.remotes.set_buttons(0, bits);
+        let active = !self.menu_open && self.focused;
+        let local = self.config.game.multiplayer == Multiplayer::Local;
+        let mut bits = [0u32; CHANNELS];
+        let mut present = [false; CHANNELS];
+        present[0] = true;
+        if active {
+            bits[0] = self.keys.iter().fold(0, |acc, &k| acc | self.bindings.key(k));
+        }
+        let pads = self.gamepads.pads(&self.bindings);
+        for (i, (_, held)) in pads.iter().enumerate() {
+            let chan = if local { self.config.controls.pad_channel(i) } else { 0 };
+            present[chan] = true;
+            if active {
+                bits[chan] |= held;
+            }
+        }
+        self.pad_names = pads.into_iter().map(|(name, _)| name).collect();
+        for chan in 0..CHANNELS {
+            self.remotes.set_buttons(chan, bits[chan]);
+            self.remotes.connect(chan, present[chan]);
+        }
     }
 
     fn set_menu(&mut self, open: bool) {
@@ -533,7 +554,7 @@ impl App {
         let fps = self.config.game.show_fps.then(|| format!("{:.0} FPS", self.fps));
         if self.menu_open || fps.is_some() {
             if let Some(window) = &self.window {
-                actions = gpu.menu.draw(window, &gpu.device, &gpu.queue, &view, size, &mut self.config, self.menu_open, fps.as_deref());
+                actions = gpu.menu.draw(window, &gpu.device, &gpu.queue, &view, size, &mut self.config, &self.pad_names, self.menu_open, fps.as_deref());
             }
         }
         frame.present();

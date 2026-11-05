@@ -16,7 +16,7 @@
 //! | + / -    | = / -                 | Start / Back (Select)          |
 //! | Home     | H                     | Guide                          |
 
-use rumble_runtime::input::button as b;
+use rumble_runtime::input::{button as b, CHANNELS};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use winit::keyboard::KeyCode;
@@ -181,6 +181,11 @@ pub struct ControlsConfig {
     pub stick: bool,
     pub stick_deadzone: f32,
     pub stick_turn: StickTurn,
+    /// With local multiplayer: the player (1-4) each gamepad plays as, in
+    /// the order they are listed. A pad without an entry plays as its
+    /// place in that order (the first is player 1, with the keyboard).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pad_players: Vec<u8>,
 }
 
 impl Default for ControlsConfig {
@@ -219,6 +224,7 @@ impl Default for ControlsConfig {
             stick: true,
             stick_deadzone: 0.5,
             stick_turn: StickTurn::Quarter,
+            pad_players: Vec::new(),
         }
     }
 }
@@ -231,6 +237,20 @@ impl ControlsConfig {
             keys.retain(|k| k != &name);
         }
         self.keyboard.entry(action.name().into()).or_default().push(name);
+    }
+
+    /// The Wii Remote channel (0-3) the `index`th gamepad plays on.
+    pub fn pad_channel(&self, index: usize) -> usize {
+        let player = self.pad_players.get(index).copied().map_or(index + 1, usize::from);
+        player.clamp(1, CHANNELS) - 1
+    }
+
+    /// Makes the `index`th gamepad play as `player` (1-4).
+    pub fn set_pad_player(&mut self, index: usize, player: u8) {
+        while self.pad_players.len() <= index {
+            self.pad_players.push((self.pad_players.len() + 1).min(CHANNELS) as u8);
+        }
+        self.pad_players[index] = player;
     }
 
     /// Binds `button` to `action`, taking it off any other action.
@@ -346,14 +366,16 @@ impl Gamepads {
         }
     }
 
-    /// Remote buttons held on any connected gamepad.
-    pub fn buttons(&mut self, bindings: &Bindings) -> u32 {
+    /// Each connected gamepad's name and the remote buttons it holds, in a
+    /// steady order (by when gilrs first saw it).
+    pub fn pads(&mut self, bindings: &Bindings) -> Vec<(String, u32)> {
         use gilrs::Axis;
         self.poll();
-        let Some(gilrs) = self.gilrs.as_ref() else { return 0 };
-        let mut bits = 0;
+        let Some(gilrs) = self.gilrs.as_ref() else { return Vec::new() };
+        let mut pads = Vec::new();
         for (id, pad) in gilrs.gamepads() {
             let id = usize::from(id);
+            let mut bits = 0;
             let mut axis = |a: Axis, deadzone| self.centred.read(id, a, pad.value(a), deadzone);
             for &(button, bit) in &bindings.pad {
                 if pad.is_pressed(button) {
@@ -382,8 +404,9 @@ impl Gamepads {
                     }
                 }
             }
+            pads.push((pad.name().to_string(), bits));
         }
-        bits
+        pads
     }
 }
 
@@ -410,6 +433,18 @@ mod tests {
         assert_eq!(b.key(KeyCode::KeyX), b::B);
         let text = toml::to_string(&c).unwrap();
         assert_eq!(toml::from_str::<ControlsConfig>(&text).unwrap(), c);
+    }
+
+    /// Pads play as their place in the list unless set otherwise; players
+    /// past 4 can't happen.
+    #[test]
+    fn pad_players() {
+        let mut c = ControlsConfig::default();
+        assert_eq!((0..5).map(|i| c.pad_channel(i)).collect::<Vec<_>>(), [0, 1, 2, 3, 3]);
+        c.set_pad_player(2, 1);
+        assert_eq!(c.pad_players, [1, 2, 1]);
+        assert_eq!(c.pad_channel(2), 0);
+        assert_eq!(c.pad_channel(3), 3);
     }
 
     /// The player's pad reports the stick a quarter turn off: pushing
