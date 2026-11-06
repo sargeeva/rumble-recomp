@@ -139,34 +139,47 @@ fn pad_from_name(name: &str) -> Option<gilrs::Button> {
     PAD_BUTTONS.iter().copied().find(|&p| pad_name(p) == name)
 }
 
-/// How the left stick is turned before reading it as directions. Some pads
-/// report it a quarter turn off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum StickTurn {
-    None,
-    Quarter,
-    Half,
-    ThreeQuarters,
-}
+/// How far the left stick must be pushed (of its full reach, as a circle) to
+/// count, and how much further it must come back to stop, so it doesn't
+/// flicker at the edge.
+const STICK_DEADZONE: f32 = 0.3;
+const STICK_RELEASE: f32 = 0.22;
+/// Past a direction's 45-degree sector by up to this (radians), the stick
+/// keeps that direction, so it doesn't flicker between neighbours.
+const STICK_HYSTERESIS: f32 = 0.12;
 
-impl StickTurn {
-    pub const ALL: [(StickTurn, &'static str); 4] = [
-        (StickTurn::None, "As reported"),
-        (StickTurn::Quarter, "Turned a quarter (some XInput pads)"),
-        (StickTurn::Half, "Turned half (both axes flipped)"),
-        (StickTurn::ThreeQuarters, "Turned three quarters"),
-    ];
-
-    /// Screen (x, y), y up, from the stick's reported axes.
-    fn apply(self, x: f32, y: f32) -> (f32, f32) {
-        match self {
-            StickTurn::None => (x, y),
-            StickTurn::Quarter => (-y, x),
-            StickTurn::Half => (-x, -y),
-            StickTurn::ThreeQuarters => (y, -x),
+/// The left stick as one of eight directions (0: right, then
+/// counter-clockwise in 45-degree steps), or none at rest. `last` is the
+/// direction it gave before.
+fn stick_direction([x, y]: [f32; 2], last: Option<u8>) -> Option<u8> {
+    use std::f32::consts::{FRAC_PI_4, FRAC_PI_8, TAU};
+    let reach = x.hypot(y);
+    if reach < if last.is_some() { STICK_RELEASE } else { STICK_DEADZONE } {
+        return None;
+    }
+    let angle = y.atan2(x).rem_euclid(TAU);
+    if let Some(l) = last {
+        let off = (angle - l as f32 * FRAC_PI_4 + TAU + std::f32::consts::PI).rem_euclid(TAU) - std::f32::consts::PI;
+        if off.abs() <= FRAC_PI_8 + STICK_HYSTERESIS {
+            return Some(l);
         }
     }
+    Some(((angle / FRAC_PI_4).round() as u8) % 8)
+}
+
+/// The remote buttons for one of `stick_direction`'s directions.
+fn direction_bits(dir: u8) -> u32 {
+    const DIRS: [&[Action]; 8] = [
+        &[Action::Right],
+        &[Action::Right, Action::Up],
+        &[Action::Up],
+        &[Action::Left, Action::Up],
+        &[Action::Left],
+        &[Action::Left, Action::Down],
+        &[Action::Down],
+        &[Action::Right, Action::Down],
+    ];
+    DIRS[dir as usize % 8].iter().fold(0, |acc, a| acc | a.bits())
 }
 
 /// The `[controls]` config section: per action, the keys and gamepad
@@ -176,11 +189,10 @@ impl StickTurn {
 pub struct ControlsConfig {
     pub keyboard: BTreeMap<String, Vec<String>>,
     pub gamepad: BTreeMap<String, Vec<String>>,
-    /// Left stick: whether it moves too, how far it must be pushed (0-1),
-    /// and how it is turned.
-    pub stick: bool,
-    pub stick_deadzone: f32,
-    pub stick_turn: StickTurn,
+    /// "True stick controls": the left stick steers in any direction, at
+    /// any speed, as the game's own Classic Controller support does,
+    /// instead of acting as the D-pad's eight directions.
+    pub true_stick: bool,
     /// With local multiplayer: the player (1-4) each gamepad plays as, in
     /// the order they are listed. A pad without an entry plays as its
     /// place in that order (the first is player 1, with the keyboard).
@@ -221,9 +233,7 @@ impl Default for ControlsConfig {
         Self {
             keyboard: keys.iter().map(|(a, ks)| (a.name().into(), ks.iter().map(|&k| key_name(k)).collect())).collect(),
             gamepad: pad.iter().map(|(a, ps)| (a.name().into(), ps.iter().map(|&p| pad_name(p)).collect())).collect(),
-            stick: true,
-            stick_deadzone: 0.5,
-            stick_turn: StickTurn::Quarter,
+            true_stick: false,
             pad_players: Vec::new(),
         }
     }
@@ -267,7 +277,8 @@ impl ControlsConfig {
 pub struct Bindings {
     keys: Vec<(KeyCode, u32)>,
     pad: Vec<(gilrs::Button, u32)>,
-    stick: Option<(f32, StickTurn)>,
+    /// The stick gives directions (else it is read as analog).
+    stick_directions: bool,
 }
 
 impl Bindings {
@@ -282,8 +293,7 @@ impl Bindings {
             let Some(a) = Action::from_name(action) else { continue };
             pad.extend(names.iter().filter_map(|n| pad_from_name(n)).map(|p| (p, a.bits())));
         }
-        let stick = c.stick.then_some((c.stick_deadzone.clamp(0.05, 0.95), c.stick_turn));
-        Self { keys, pad, stick }
+        Self { keys, pad, stick_directions: !c.true_stick }
     }
 
     /// Remote buttons a key presses.
@@ -324,6 +334,34 @@ pub struct Gamepads {
     /// The last button pressed since `take_pressed`, for binding it.
     pressed: Option<gilrs::Button>,
     centred: CentredAxes,
+    /// Each pad's stick direction last time (`stick_direction`).
+    directions: std::collections::HashMap<usize, u8>,
+}
+
+/// A stick for analog movement: nothing within a small circle round the
+/// centre (where a resting stick drifts), then the rest of its reach
+/// stretched to 0-1, in the same direction.
+pub fn analog_stick([x, y]: [f32; 2]) -> [f32; 2] {
+    const DEAD: f32 = 0.15;
+    let reach = x.hypot(y);
+    if reach <= DEAD {
+        return [0.0; 2];
+    }
+    let k = ((reach - DEAD) / (1.0 - DEAD)).min(1.0) / reach;
+    [x * k, y * k]
+}
+
+/// Of several pads' sticks, the one pushed furthest.
+pub fn strongest(sticks: impl IntoIterator<Item = [f32; 2]>) -> [f32; 2] {
+    sticks.into_iter().fold([0.0; 2], |a, s| if s[0].hypot(s[1]) > a[0].hypot(a[1]) { s } else { a })
+}
+
+/// A gamepad as read: its name, the remote buttons it holds, and its left
+/// stick (-1 to 1, y up).
+pub struct Pad {
+    pub name: String,
+    pub buttons: u32,
+    pub stick: [f32; 2],
 }
 
 impl Gamepads {
@@ -340,7 +378,7 @@ impl Gamepads {
                 None
             }
         };
-        Self { gilrs, pressed: None, centred: CentredAxes::default() }
+        Self { gilrs, pressed: None, centred: CentredAxes::default(), directions: Default::default() }
     }
 
     /// The gamepad button pressed most recently since the last call.
@@ -366,9 +404,10 @@ impl Gamepads {
         }
     }
 
-    /// Each connected gamepad's name and the remote buttons it holds, in a
-    /// steady order (by when gilrs first saw it).
-    pub fn pads(&mut self, bindings: &Bindings) -> Vec<(String, u32)> {
+    /// Each connected gamepad's name, the remote buttons it holds and its
+    /// left stick (-1 to 1, y up), in a steady order (by when gilrs first
+    /// saw it). With the stick giving directions, it holds those too.
+    pub fn pads(&mut self, bindings: &Bindings) -> Vec<Pad> {
         use gilrs::Axis;
         self.poll();
         let Some(gilrs) = self.gilrs.as_ref() else { return Vec::new() };
@@ -390,21 +429,19 @@ impl Gamepads {
                     bits |= a.bits();
                 }
             }
-            if let Some((deadzone, turn)) = bindings.stick {
-                let (x, y) = turn.apply(axis(Axis::LeftStickX, deadzone), axis(Axis::LeftStickY, deadzone));
-                let dirs = [
-                    (x < -deadzone, Action::Left),
-                    (x > deadzone, Action::Right),
-                    (y > deadzone, Action::Up),
-                    (y < -deadzone, Action::Down),
-                ];
-                for (on, a) in dirs {
-                    if on {
-                        bits |= a.bits();
+            let stick = [axis(Axis::LeftStickX, STICK_DEADZONE), axis(Axis::LeftStickY, STICK_DEADZONE)];
+            if bindings.stick_directions {
+                match stick_direction(stick, self.directions.get(&id).copied()) {
+                    Some(d) => {
+                        self.directions.insert(id, d);
+                        bits |= direction_bits(d);
+                    }
+                    None => {
+                        self.directions.remove(&id);
                     }
                 }
             }
-            pads.push((pad.name().to_string(), bits));
+            pads.push(Pad { name: pad.name().to_string(), buttons: bits, stick });
         }
         pads
     }
@@ -447,12 +484,21 @@ mod tests {
         assert_eq!(c.pad_channel(3), 3);
     }
 
-    /// The player's pad reports the stick a quarter turn off: pushing
-    /// right reads as -Y, pushing up as +X.
+    /// The stick gives eight equal directions from a third of its reach,
+    /// and holds a direction a little past its edge.
     #[test]
-    fn quarter_turn_matches_the_players_pad() {
-        assert_eq!(StickTurn::Quarter.apply(0.0, -1.0), (1.0, 0.0));
-        assert_eq!(StickTurn::Quarter.apply(1.0, 0.0), (-0.0, 1.0));
+    fn stick_directions() {
+        assert_eq!(stick_direction([0.2, 0.0], None), None);
+        assert_eq!(stick_direction([1.0, 0.0], None), Some(0));
+        assert_eq!(stick_direction([0.0, 1.0], None), Some(2));
+        assert_eq!(stick_direction([-0.7, -0.7], None), Some(5));
+        // 25 degrees: nearer the diagonal edge than right's centre.
+        let (s, c) = 25f32.to_radians().sin_cos();
+        assert_eq!(stick_direction([c, s], None), Some(1));
+        assert_eq!(stick_direction([c, s], Some(0)), Some(0), "held a little past the edge");
+        assert_eq!(stick_direction([0.25, 0.0], Some(0)), Some(0), "released further in");
+        assert_eq!(stick_direction([0.1, 0.0], Some(0)), None);
+        assert_eq!(direction_bits(1), Action::Right.bits() | Action::Up.bits());
     }
 
     /// A trigger mapped onto a stick axis rests at -1 or +1; it mustn't read

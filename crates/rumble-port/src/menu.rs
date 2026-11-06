@@ -8,7 +8,7 @@
 
 use crate::net::PortOpening;
 use crate::config::{Config, Multiplayer};
-use crate::controls::{Action, ControlsConfig, StickTurn};
+use crate::controls::{Action, ControlsConfig};
 use crate::display::{Aspect, NamedResolution, Resolution, Upscaler};
 use winit::event::WindowEvent;
 use winit::keyboard::KeyCode;
@@ -532,20 +532,10 @@ impl Page<'_> {
         let c = &mut self.cfg.controls;
         egui::Grid::new("stick").num_columns(2).spacing([24.0, 10.0]).show(ui, |ui| {
             ui.label("Left stick");
-            changed |= ui.checkbox(&mut c.stick, "Use the left stick to move (on by default)").changed();
-            ui.end_row();
-
-            ui.label("Stick dead zone");
-            changed |= ui.add(egui::Slider::new(&mut c.stick_deadzone, 0.1..=0.9).step_by(0.05)).changed();
-            ui.end_row();
-
-            ui.label("Stick orientation");
-            let current = StickTurn::ALL.iter().find(|(t, _)| *t == c.stick_turn).map_or("?", |(_, l)| l);
-            egui::ComboBox::from_id_salt("stick_turn").selected_text(current).show_ui(ui, |ui| {
-                for &(t, label) in &StickTurn::ALL {
-                    changed |= ui.selectable_value(&mut c.stick_turn, t, label).changed();
-                }
-            });
+            changed |= ui
+                .checkbox(&mut c.true_stick, "True stick controls")
+                .on_hover_text("Steer in any direction, at any speed, as the game does with a Classic Controller. Off: the stick moves in eight directions, like the D-pad.")
+                .changed();
             ui.end_row();
         });
         if self.cfg.game.multiplayer != Multiplayer::Off {
@@ -703,7 +693,7 @@ impl Page<'_> {
             changed |= ui.radio_value(&mut g.multiplayer, Multiplayer::Local, "Local").changed();
             changed |= ui.radio_value(&mut g.multiplayer, Multiplayer::Online, "Online").changed();
         });
-        ui.small("Local: extra gamepads play as players 2-4 (choose who plays as whom under Controls). Online: friends join over the network too. The hub's multiplayer pedestal comes back when the game is restarted.");
+        ui.small("Local: extra gamepads play as players 2-4 (choose who plays as whom under Controls). Online: friends join over the network too.");
         if g.multiplayer == Multiplayer::Online {
             ui.add_space(4.0);
             self.online(ui, &mut changed);

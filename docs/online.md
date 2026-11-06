@@ -4,7 +4,7 @@ Work in progress. The host runs the game; players on other PCs join it as player
 
 ## Hosting
 
-Set **Esc → Game → Multiplayer** to **Online**. That also turns on everything local multiplayer does (see [multiplayer-ditto.md](multiplayer-ditto.md)), so this PC's gamepads can play alongside online players. Then:
+Set **Esc → Game → Multiplayer** to **Online**. That also turns on everything local multiplayer does (see [multiplayer.md](multiplayer.md)), so this PC's gamepads can play alongside online players. Then:
 
 - **Your name:** shown to the players who find your session. It is saved as `[online] name`.
 - **Port:** 7777 by default, saved as `[online] port`.

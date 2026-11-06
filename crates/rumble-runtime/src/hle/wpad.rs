@@ -135,8 +135,39 @@ const KPAD_DATA_FORMAT: u32 = 0x5f;
 
 /// `WPAD_DEV_CORE` / `WPAD_DEV_NOT_FOUND`, and the core+acc+pointer format.
 const DEV_CORE: u32 = 0;
+/// A Classic Controller attached ("True stick controls").
+const DEV_CLASSIC: u32 = 2;
 const DEV_NOT_FOUND: u32 = 0xfd;
 const FMT_CORE_ACC_DPD: u8 = 2;
+const FMT_CLASSIC_ACC_DPD: u8 = 8;
+/// `KPADStatus.ex_status` for a Classic Controller: its buttons (held,
+/// pressed, released) and left stick (x, y).
+const KPAD_CL_HOLD: u32 = 0x60;
+const KPAD_CL_TRIG: u32 = 0x64;
+const KPAD_CL_RELEASE: u32 = 0x68;
+const KPAD_CL_LSTICK: u32 = 0x6c;
+
+/// Classic Controller buttons for remote ones, so each does what it does on
+/// the remote held sideways: the game reads the Classic Controller's a as
+/// the remote's 2, b as 1, X (or Y) as A, and its D-pad the way it lies
+/// rather than turned. The remote's B, which the game doesn't use, is ZL.
+fn classic_buttons(remote: u32) -> u32 {
+    use crate::input::button as b;
+    const MAP: [(u32, u32); 11] = [
+        (b::RIGHT, 0x0001),
+        (b::UP, 0x0002),
+        (b::LEFT, 0x4000),
+        (b::DOWN, 0x8000),
+        (b::TWO, 0x0010),
+        (b::ONE, 0x0040),
+        (b::A, 0x0008),
+        (b::B, 0x0080),
+        (b::PLUS, 0x0400),
+        (b::MINUS, 0x1000),
+        (b::HOME, 0x0800),
+    ];
+    MAP.iter().filter(|(r, _)| remote & r != 0).fold(0, |acc, (_, c)| acc | c)
+}
 /// `KPAD_READ_ERR_NO_CONTROLLER`, `WPAD_ERR_NO_CONTROLLER`.
 const KPAD_NO_CONTROLLER: i32 = -2;
 const WPAD_NO_CONTROLLER: i32 = -1;
@@ -172,8 +203,19 @@ fn kpad_read_ex(cpu: &mut Cpu, mem: &mut Memory) -> Result<(), Fault> {
         write_f32(mem, buf + KPAD_ACC_VALUE, &[1.0])?;
         write_f32(mem, buf + KPAD_HORIZON, &[1.0, 0.0])?;
         write_f32(mem, buf + KPAD_ACC_VERTICAL, &[1.0, 0.0])?;
-        mem.w8(buf + KPAD_DEV_TYPE, DEV_CORE as u8)?;
-        mem.w8(buf + KPAD_DATA_FORMAT, FMT_CORE_ACC_DPD)?;
+        if mem.input.remotes.classic() {
+            let (hold, last) = (classic_buttons(hold), classic_buttons(last));
+            mem.w32(buf + KPAD_CL_HOLD, hold)?;
+            mem.w32(buf + KPAD_CL_TRIG, hold & !last)?;
+            mem.w32(buf + KPAD_CL_RELEASE, last & !hold)?;
+            let stick = mem.input.remotes.stick(chan);
+            write_f32(mem, buf + KPAD_CL_LSTICK, &stick)?;
+            mem.w8(buf + KPAD_DEV_TYPE, DEV_CLASSIC as u8)?;
+            mem.w8(buf + KPAD_DATA_FORMAT, FMT_CLASSIC_ACC_DPD)?;
+        } else {
+            mem.w8(buf + KPAD_DEV_TYPE, DEV_CORE as u8)?;
+            mem.w8(buf + KPAD_DATA_FORMAT, FMT_CORE_ACC_DPD)?;
+        }
         (1, 0)
     } else {
         (0, 0)
@@ -190,8 +232,9 @@ const WPAD_ERR_NO_CONTROLLER: u32 = -1i32 as u32;
 
 /// `WPADGetInfo(chan, &info)`: the real one asks the remote for a status
 /// report and sleeps until it answers, which never happens here. Answer at
-/// once for a connected remote: nothing attached, IR and speaker off, full
-/// battery, and the channel's player LED.
+/// once for a connected remote: nothing attached (or a Classic Controller,
+/// with true stick controls), IR and speaker off, full battery, and the
+/// channel's player LED.
 ///
 /// `WPADInfo`: BOOLs dpd, speaker, attach, lowBat, nearempty at 0x00-0x10,
 /// then u8 battery (0-4), led, protocol, firmware at 0x14-0x17.
@@ -203,6 +246,9 @@ fn wpad_get_info(cpu: &mut Cpu, mem: &mut Memory) -> Result<(), Fault> {
     }
     for off in (0..0x14).step_by(4) {
         mem.w32(info + off, 0)?;
+    }
+    if mem.input.remotes.classic() {
+        mem.w32(info + 0x08, 1)?;
     }
     mem.w8(info + 0x14, 4)?;
     mem.w8(info + 0x15, 1 << chan)?;
@@ -218,7 +264,8 @@ fn wpad_probe(cpu: &mut Cpu, mem: &mut Memory) -> Result<(), Fault> {
     let (chan, ty) = (cpu.gpr[3] as usize, cpu.gpr[4]);
     let connected = chan < CHANNELS && mem.input.remotes.connected(chan);
     if ty != 0 {
-        mem.w32(ty, if connected { DEV_CORE } else { DEV_NOT_FOUND })?;
+        let attached = if mem.input.remotes.classic() { DEV_CLASSIC } else { DEV_CORE };
+        mem.w32(ty, if connected { attached } else { DEV_NOT_FOUND })?;
     }
     cpu.gpr[3] = if connected { 0 } else { WPAD_NO_CONTROLLER as u32 };
     Ok(())

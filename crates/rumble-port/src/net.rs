@@ -30,7 +30,7 @@ pub const MAX_NAME: usize = 16;
 pub const QUALITIES: [u16; 4] = [720, 1080, 1440, 2160];
 
 const MAGIC: &[u8; 4] = b"RMBL";
-const VERSION: u16 = 3;
+const VERSION: u16 = 4;
 /// How long the host waits for a client's hello.
 const HELLO_TIME: Duration = Duration::from_secs(10);
 /// How long the host waits while the player decides and types the password.
@@ -162,8 +162,9 @@ enum ToHost {
     /// `height` is the picture size it wants (one of `QUALITIES`); `h264`,
     /// whether it can decode H.264 (else pictures are JPEG).
     Join { name: String, height: u16, h264: bool },
-    /// The Wii Remote buttons it holds.
-    Input(u32),
+    /// The Wii Remote buttons it holds, and its left stick (-1 to 1, y up)
+    /// for true stick controls.
+    Input(u32, [f32; 2]),
     Bye,
 }
 
@@ -187,7 +188,10 @@ impl ToHost {
     fn encode(&self) -> Vec<u8> {
         match self {
             ToHost::Join { name, height, h264 } => [&[1][..], &height.to_be_bytes(), &[*h264 as u8], name.as_bytes()].concat(),
-            ToHost::Input(bits) => [&[2][..], &bits.to_be_bytes()].concat(),
+            ToHost::Input(bits, stick) => {
+                let axis = |v: f32| ((v.clamp(-1.0, 1.0) * 32767.0).round() as i16).to_be_bytes();
+                [&[2][..], &bits.to_be_bytes(), &axis(stick[0]), &axis(stick[1])].concat()
+            }
             ToHost::Bye => vec![3],
         }
     }
@@ -199,7 +203,10 @@ impl ToHost {
                 h264: rest[2] & 1 != 0,
                 name: String::from_utf8(rest[3..].to_vec()).ok()?,
             },
-            (2, bits) => ToHost::Input(u32::from_be_bytes(bits.try_into().ok()?)),
+            (2, [b0, b1, b2, b3, x0, x1, y0, y1]) => {
+                let axis = |hi: u8, lo: u8| i16::from_be_bytes([hi, lo]) as f32 / 32767.0;
+                ToHost::Input(u32::from_be_bytes([*b0, *b1, *b2, *b3]), [axis(*x0, *x1), axis(*y0, *y1)])
+            }
             (3, []) => ToHost::Bye,
             _ => return None,
         })
@@ -259,6 +266,8 @@ pub struct Peer {
     pub name: String,
     /// The Wii Remote buttons it holds.
     pub buttons: u32,
+    /// Its left stick (-1 to 1, y up).
+    pub stick: [f32; 2],
     stream: TcpStream,
     /// The host ended multiplayer and is disconnecting it.
     removed: bool,
@@ -583,7 +592,7 @@ fn serve(mut s: TcpStream, addr: SocketAddr, shared: &Shared, events: &Sender<St
             return Ok(());
         }
         let chan = lobby.free_channel().unwrap();
-        lobby.players[chan] = Some(Peer { name: name.clone(), buttons: 0, stream: s.try_clone()?, removed: false });
+        lobby.players[chan] = Some(Peer { name: name.clone(), buttons: 0, stick: [0.0; 2], stream: s.try_clone()?, removed: false });
         chan
     };
     let player = chan as u8 + 1;
@@ -617,9 +626,10 @@ fn serve(mut s: TcpStream, addr: SocketAddr, shared: &Shared, events: &Sender<St
             break None;
         }
         match receiving.receive().ok().and_then(|m| ToHost::decode(&m)) {
-            Some(ToHost::Input(bits)) => {
+            Some(ToHost::Input(bits, stick)) => {
                 if let Some(p) = shared.lobby.lock().unwrap().players[chan].as_mut() {
                     p.buttons = bits;
+                    p.stick = stick;
                 }
             }
             Some(ToHost::Bye) => break Some(format!("{name} left")),
@@ -698,8 +708,8 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn send_input(&mut self, bits: u32) -> Result<()> {
-        self.sending.send(&ToHost::Input(bits).encode())
+    pub fn send_input(&mut self, bits: u32, stick: [f32; 2]) -> Result<()> {
+        self.sending.send(&ToHost::Input(bits, stick).encode())
     }
 
     /// What the host sends from now on, read on a thread of its own: each
@@ -751,7 +761,7 @@ mod tests {
 
     #[test]
     fn messages_round_trip() {
-        for m in [ToHost::Join { name: "Ash".into(), height: 1080, h264: true }, ToHost::Input(0x0900), ToHost::Bye] {
+        for m in [ToHost::Join { name: "Ash".into(), height: 1080, h264: true }, ToHost::Input(0x0900, [1.0, -1.0]), ToHost::Bye] {
             assert_eq!(ToHost::decode(&m.encode()), Some(m));
         }
         for m in [
@@ -813,7 +823,7 @@ mod tests {
         assert_eq!(ash.player, 2);
         assert_eq!(next(&host.events), "Ash joined as Player 2");
         let from_host = ash.messages();
-        ash.send_input(0x0100).unwrap();
+        ash.send_input(0x0100, [0.0; 2]).unwrap();
         for _ in 0..50 {
             if host.lobby().players[1].as_ref().is_some_and(|p| p.buttons == 0x0100) {
                 break;

@@ -244,10 +244,12 @@ impl ClientApp {
         self.stage = Stage::Playing(Playing { client, picture, texture: None, toasts, closed, _audio: audio, menu_open: false });
     }
 
-    /// The Wii Remote buttons this PC holds: keys and gamepads, through the
-    /// config's bindings.
-    fn held(&mut self, ctx: &egui::Context) -> u32 {
-        let mut bits = self.gamepads.pads(&self.bindings).iter().fold(0, |acc, (_, b)| acc | b);
+    /// The Wii Remote buttons this PC holds (keys and gamepads, through the
+    /// config's bindings) and its left stick.
+    fn held(&mut self, ctx: &egui::Context) -> (u32, [f32; 2]) {
+        let pads = self.gamepads.pads(&self.bindings);
+        let mut bits = pads.iter().fold(0, |acc, p| acc | p.buttons);
+        let stick = crate::controls::analog_stick(crate::controls::strongest(pads.iter().map(|p| p.stick)));
         ctx.input(|i| {
             for key in i.keys_down.iter().filter_map(|&k| key_code(k)) {
                 bits |= self.bindings.key(key);
@@ -262,15 +264,15 @@ impl ClientApp {
                 bits |= self.bindings.key(KeyCode::AltLeft);
             }
         });
-        bits
+        (bits, stick)
     }
 
     fn playing(&mut self, ctx: &egui::Context) {
         let focused = ctx.input(|i| i.focused);
         let menu_open = matches!(&self.stage, Stage::Playing(p) if p.menu_open);
-        let held = if focused && !menu_open { self.held(ctx) } else { 0 };
+        let (held, stick) = if focused && !menu_open { self.held(ctx) } else { (0, [0.0; 2]) };
         let Stage::Playing(p) = &mut self.stage else { return };
-        if p.closed.load(Ordering::Relaxed) || p.client.send_input(held).is_err() {
+        if p.closed.load(Ordering::Relaxed) || p.client.send_input(held, stick).is_err() {
             let host = p.client.host.clone();
             self.back_to_connect(Some(format!("Lost the connection to {host}'s session.")));
             return;

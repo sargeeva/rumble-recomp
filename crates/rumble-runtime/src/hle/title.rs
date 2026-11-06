@@ -1,5 +1,5 @@
 //! A "Recomped" line under the title screen's copyright (see
-//! `docs/multiplayer-ditto.md`).
+//! `docs/multiplayer.md`).
 //!
 //! The copyright is the `copy` text box of `title2d.arc/arc/blyt/
 //! title_main.brlyt`. Its text can't grow in the archive, so it grows in

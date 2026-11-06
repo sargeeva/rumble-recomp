@@ -1,4 +1,4 @@
-//! "End Multiplayer" in the game's pause menu (see `docs/multiplayer-ditto.md`).
+//! "End Multiplayer" in the game's pause menu (see `docs/multiplayer.md`).
 //!
 //! The pause menu (`CPauseMenu`) builds a list of entries, each a message
 //! and an action, and shows it with a list widget, which returns the chosen

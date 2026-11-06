@@ -239,9 +239,6 @@ pub struct Options {
     pub wav: Option<PathBuf>,
     /// Build draws on a thread of their own, as `run` does by default.
     pub threaded: bool,
-    /// Keep the original multiplayer pedestal (`[game]
-    /// original_multiplayer`).
-    pub original_multiplayer: bool,
     /// The addons picked in setup (`[addons]`).
     pub addons: rumble_runtime::hle::addons::Addons,
 }
@@ -255,7 +252,7 @@ pub fn run(build_dir: &Path, steps: u64, dump: Option<Dump>, presses: &[Press], 
     // `RUMBLE_NAND` names another folder in build/, for two runs at once.
     let nand = std::env::var("RUMBLE_NAND").unwrap_or_else(|_| "nand-boot".into());
     let (mut cpu, mut mem) = start(build_dir, &nand, &dol, &prog)?;
-    rumble_runtime::hle::multiplay::configure(&mut mem, opts.original_multiplayer);
+    rumble_runtime::hle::multiplay::configure(&mut mem);
     rumble_runtime::hle::addons::configure(&mut mem, opts.addons);
     let block_addrs = install_blocks(&mut cpu, &mut mem, opts.exec, &prog);
     // Functions whose code differs from the DOL from the start (replaced

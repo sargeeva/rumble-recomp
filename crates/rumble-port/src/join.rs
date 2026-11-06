@@ -115,8 +115,8 @@ pub fn run(cfg: &Config, addr: Option<String>) -> Result<()> {
             None if leaving => break,
             None => 0,
         };
-        let held = pads.pads(&bindings).iter().fold(scripted, |acc, (_, b)| acc | b);
-        if let Err(e) = client.send_input(held) {
+        let held = pads.pads(&bindings).iter().fold(scripted, |acc, p| acc | p.buttons);
+        if let Err(e) = client.send_input(held, [0.0; 2]) {
             bail!("lost the connection: {e:#}");
         }
         next += frame;

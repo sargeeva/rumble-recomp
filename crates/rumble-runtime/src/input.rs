@@ -64,6 +64,11 @@ pub struct Remotes {
     /// End Multiplayer was chosen in the game's pause menu, for the host to
     /// take (`hle::pause`).
     end_requested: AtomicBool,
+    /// "True stick controls": each remote has a Classic Controller, whose
+    /// left stick (`stick`, x then y as f32 bits, -1 to 1, y up) the game
+    /// reads as analog movement (`hle/wpad.rs`).
+    classic: AtomicBool,
+    stick: [AtomicU32; CHANNELS * 2],
 }
 
 impl Remotes {
@@ -117,6 +122,29 @@ impl Remotes {
 
     pub fn name(&self, chan: usize) -> Option<String> {
         self.names.lock().unwrap().get(chan).cloned().flatten()
+    }
+
+    pub fn set_classic(&self, on: bool) {
+        self.classic.store(on, Ordering::Relaxed);
+    }
+
+    pub fn classic(&self) -> bool {
+        self.classic.load(Ordering::Relaxed)
+    }
+
+    /// Player `chan`'s left stick, -1 to 1 each way, y up.
+    pub fn set_stick(&self, chan: usize, [x, y]: [f32; 2]) {
+        if chan < CHANNELS {
+            self.stick[chan * 2].store(x.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
+            self.stick[chan * 2 + 1].store(y.clamp(-1.0, 1.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    pub fn stick(&self, chan: usize) -> [f32; 2] {
+        if chan >= CHANNELS {
+            return [0.0; 2];
+        }
+        [f32::from_bits(self.stick[chan * 2].load(Ordering::Relaxed)), f32::from_bits(self.stick[chan * 2 + 1].load(Ordering::Relaxed))]
     }
 
     pub fn request_end(&self) {

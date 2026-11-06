@@ -1,5 +1,5 @@
 //! Rumble Weekend: a "Befriended Shinies" line on the Information
-//! podium's Play Info page (see `docs/multiplayer-ditto.md`).
+//! podium's Play Info page (see `docs/multiplayer.md`).
 //!
 //! The podium is `script.arc/CItem_information.pkc`. Its Play Info page is
 //! three `DlgInfoSetLine(page, row, label, value, suffix)` calls: Time

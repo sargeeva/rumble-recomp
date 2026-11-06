@@ -12,7 +12,7 @@
 use crate::boot;
 use crate::config::{Config, Multiplayer};
 use crate::audio::{Audio, AudioQueue, Mix};
-use crate::controls::{Bindings, Gamepads};
+use crate::controls::{Bindings, Gamepads, analog_stick, strongest};
 use crate::display::{Aspect, DisplayConfig, NamedResolution, Resolution, Upscaler};
 use crate::menu::{Actions, Device, Hosting, Menu, Overlay};
 use crate::net::{Host, Outbox, PortOpening, ToClient};
@@ -239,10 +239,9 @@ pub fn run(cfg: Config, config_path: &Path, presses: Vec<boot::Press>, exec: boo
         let remotes = remotes.clone();
         let outbox = outbox.clone();
         let threaded = cfg.game.threaded_graphics;
-        let original_multiplayer = cfg.game.original_pedestal();
         let addons = cfg.addons.runtime();
         std::thread::Builder::new().name("emulation".into()).spawn(move || loop {
-            let result = emulate(build_dir.clone(), remotes.clone(), &presses, exec, threaded, original_multiplayer, addons, tx.clone(), sound.clone(), &outbox, &mix, &proxy, &control);
+            let result = emulate(build_dir.clone(), remotes.clone(), &presses, exec, threaded, addons, tx.clone(), sound.clone(), &outbox, &mix, &proxy, &control);
             if control.quit.load(Ordering::Relaxed) || !control.restart.swap(false, Ordering::Relaxed) {
                 if let Err(e) = result {
                     let _ = proxy.send_event(Event::Stopped(format!("{e:#}")));
@@ -303,7 +302,6 @@ fn emulate(
     presses: &[boot::Press],
     exec: boot::Exec,
     threaded: bool,
-    original_multiplayer: bool,
     addons: rumble_runtime::hle::addons::Addons,
     tx: SyncSender<Vec<GpuCommand>>,
     sound: Option<Arc<AudioQueue>>,
@@ -317,7 +315,7 @@ fn emulate(
     let (mut cpu, mut mem) = {
         let prog = analysis::analyze(&dol);
         let (mut cpu, mut mem) = boot::start(&build_dir, "nand", &dol, &prog)?;
-        rumble_runtime::hle::multiplay::configure(&mut mem, original_multiplayer);
+        rumble_runtime::hle::multiplay::configure(&mut mem);
         rumble_runtime::hle::addons::configure(&mut mem, addons);
         boot::install_blocks(&mut cpu, &mut mem, exec, &prog);
         (cpu, mem)
@@ -592,15 +590,17 @@ impl App {
         if active {
             bits[0] = self.keys.iter().fold(0, |acc, &k| acc | self.bindings.key(k));
         }
+        let mut sticks = [[0.0f32; 2]; CHANNELS];
         let pads = self.gamepads.pads(&self.bindings);
-        for (i, (_, held)) in pads.iter().enumerate() {
+        for (i, pad) in pads.iter().enumerate() {
             let chan = if local { self.config.controls.pad_channel(i) } else { 0 };
             present[chan] = true;
             if active {
-                bits[chan] |= held;
+                bits[chan] |= pad.buttons;
+                sticks[chan] = strongest([sticks[chan], analog_stick(pad.stick)]);
             }
         }
-        self.overlay.pads = pads.into_iter().map(|(name, _)| name).collect();
+        self.overlay.pads = pads.into_iter().map(|p| p.name).collect();
         let height = self.outbox.height();
         if height != self.stream_height {
             self.stream_height = height;
@@ -616,6 +616,7 @@ impl App {
                 if let Some(p) = p {
                     present[chan] = true;
                     bits[chan] |= p.buttons;
+                    sticks[chan] = strongest([sticks[chan], analog_stick(p.stick)]);
                 }
             }
             // Names for the tags over the players' health bars.
@@ -647,12 +648,15 @@ impl App {
                 self.seated[chan] = false;
                 present[chan] = false;
                 bits[chan] = 0;
+                sticks[chan] = [0.0; 2];
             } else if present[chan] {
                 self.seated[chan] = true;
             }
         }
+        self.remotes.set_classic(self.config.controls.true_stick);
         for chan in 0..CHANNELS {
             self.remotes.set_buttons(chan, bits[chan]);
+            self.remotes.set_stick(chan, sticks[chan]);
             self.remotes.connect(chan, present[chan] || self.seated[chan]);
         }
     }

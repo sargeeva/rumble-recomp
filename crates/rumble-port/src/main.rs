@@ -187,8 +187,7 @@ fn main() -> Result<()> {
                 Some(path) => remote::Recording::load(&path).with_context(|| format!("reading {}", path.display()))?,
                 None => remote::Recording::default(),
             };
-            let original_multiplayer = cfg.game.original_pedestal();
-            let opts = boot::Options { no_trace, capture, exec, profile, replay, widescreen, wav, threaded, original_multiplayer, addons: cfg.addons.runtime() };
+            let opts = boot::Options { no_trace, capture, exec, profile, replay, widescreen, wav, threaded, addons: cfg.addons.runtime() };
             boot::run(&cfg.paths.build_dir, steps, dump, &press, &opts)
         }
         Cmd::Join { addr } => join::run(&cfg, addr),
