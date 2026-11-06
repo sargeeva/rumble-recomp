@@ -13,14 +13,14 @@ use crate::boot;
 use crate::config::{Config, Multiplayer};
 use crate::audio::{Audio, AudioQueue, Mix};
 use crate::controls::{Bindings, Gamepads};
-use crate::display::{Aspect, DisplayConfig, NamedResolution, Resolution};
+use crate::display::{Aspect, DisplayConfig, NamedResolution, Resolution, Upscaler};
 use crate::menu::{Actions, Device, Hosting, Menu, Overlay};
 use crate::net::{Host, Outbox, PortOpening, ToClient};
 use crate::video;
 use crate::remote::{self, Action, Recorder, Remote, Settings};
 use crate::saves;
 use rumble_formats::wiisave::Save;
-use crate::render::{self, Renderer};
+use crate::render::{self, Renderer, Upscaling};
 use anyhow::{Context, Result};
 use rumble_formats::dol::Dol;
 use rumble_recomp::analysis;
@@ -751,6 +751,12 @@ impl App {
         gpu.renderer.set_scale(efb_scale(&self.config.display, size).max(stream));
         gpu.renderer.set_widescreen(self.config.display.resolve_for(size).widescreen());
         self.control.widescreen.store(gpu.renderer.widescreen().to_bits(), Ordering::Relaxed);
+        let d = &self.config.display;
+        gpu.renderer.set_msaa(if d.msaa { 4 } else { 1 });
+        gpu.renderer.set_upscaling(match d.upscaling {
+            Upscaler::Bilinear => Upscaling::Bilinear,
+            Upscaler::Fsr => Upscaling::Fsr { sharpness: d.sharpness },
+        });
     }
 
     fn redraw(&mut self) -> Actions {

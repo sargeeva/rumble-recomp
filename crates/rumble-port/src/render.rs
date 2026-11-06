@@ -164,6 +164,26 @@ struct Blit {
     uniform: wgpu::Buffer,
 }
 
+/// FSR 1 (`fsr.wgsl`): EASU scales up into `upscaled`, RCAS sharpens it
+/// into the window, of `format`.
+struct Fsr {
+    format: wgpu::TextureFormat,
+    easu: wgpu::RenderPipeline,
+    rcas: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    easu_uniform: wgpu::Buffer,
+    rcas_uniform: wgpu::Buffer,
+    upscaled: Option<wgpu::Texture>,
+}
+
+/// How the picture is scaled up to the window when the game renders below
+/// its resolution: bilinear, or FSR 1 with this sharpness (0-1).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Upscaling {
+    Bilinear,
+    Fsr { sharpness: f32 },
+}
+
 pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -175,6 +195,11 @@ pub struct Renderer {
     efb_view: wgpu::TextureView,
     efb: wgpu::Texture,
     depth_view: wgpu::TextureView,
+    /// Samples per pixel of the EFB (1, or 4 for MSAA): with more, draws go
+    /// to `msaa_view` and each pass resolves it into the EFB, which copies
+    /// read as before (depth is never read, so it stays multisampled).
+    msaa: u32,
+    msaa_view: Option<wgpu::TextureView>,
     xfb: wgpu::Texture,
     xfb_view: wgpu::TextureView,
     /// Last copy to the external framebuffer, in EFB pixels.
@@ -202,6 +227,8 @@ pub struct Renderer {
     white: wgpu::TextureView,
     frame: u64,
     blit: Option<Blit>,
+    upscaling: Upscaling,
+    fsr: Option<Fsr>,
     /// Where `grab` draws the picture streamed to online players, and the
     /// buffer it is read back through.
     grab_target: Option<wgpu::Texture>,
@@ -216,14 +243,15 @@ fn efb_size(scale: u32, wide: f32) -> wgpu::Extent3d {
     }
 }
 
-/// EFB color, EFB depth and XFB targets at `scale` and `wide`.
-fn targets(device: &wgpu::Device, scale: u32, wide: f32) -> [wgpu::Texture; 3] {
-    let target = |label, format, usage| {
+/// EFB color, EFB depth (with `msaa` samples) and XFB targets at `scale`
+/// and `wide`, and the multisampled EFB color with MSAA.
+fn targets(device: &wgpu::Device, scale: u32, wide: f32, msaa: u32) -> ([wgpu::Texture; 3], Option<wgpu::TextureView>) {
+    let target = |label, format, usage, samples| {
         device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: efb_size(scale, wide),
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: samples,
             dimension: wgpu::TextureDimension::D2,
             format,
             usage,
@@ -231,23 +259,42 @@ fn targets(device: &wgpu::Device, scale: u32, wide: f32) -> [wgpu::Texture; 3] {
         })
     };
     use wgpu::TextureUsages as U;
-    [
-        target("efb", EFB_FORMAT, U::RENDER_ATTACHMENT | U::COPY_SRC | U::TEXTURE_BINDING),
-        target("efb depth", DEPTH_FORMAT, U::RENDER_ATTACHMENT),
-        target("xfb", EFB_FORMAT, U::COPY_DST | U::COPY_SRC | U::TEXTURE_BINDING),
-    ]
+    let msaa_view = (msaa > 1).then(|| target("efb msaa", EFB_FORMAT, U::RENDER_ATTACHMENT, msaa).create_view(&Default::default()));
+    (
+        [
+            target("efb", EFB_FORMAT, U::RENDER_ATTACHMENT | U::COPY_SRC | U::TEXTURE_BINDING, 1),
+            target("efb depth", DEPTH_FORMAT, U::RENDER_ATTACHMENT, msaa),
+            target("xfb", EFB_FORMAT, U::COPY_DST | U::COPY_SRC | U::TEXTURE_BINDING, 1),
+        ],
+        msaa_view,
+    )
 }
 
 impl Renderer {
     /// Changes the EFB's resolution multiple. The picture is lost until
     /// the game's next frame.
     pub fn set_scale(&mut self, scale: u32) {
-        self.set_targets(scale.max(1), self.wide);
+        self.set_targets(scale.max(1), self.wide, self.msaa);
     }
 
     /// Makes the EFB about `wide` times as wide as 4:3 (see `Draw::wide`).
     pub fn set_widescreen(&mut self, wide: f32) {
-        self.set_targets(self.scale, wide.max(1.0));
+        self.set_targets(self.scale, wide.max(1.0), self.msaa);
+    }
+
+    /// Draws with `samples` per pixel (1, or 4 for MSAA). The picture is
+    /// lost until the game's next frame.
+    pub fn set_msaa(&mut self, samples: u32) {
+        let samples = if samples > 1 { 4 } else { 1 };
+        if samples != self.msaa {
+            self.pipelines.clear();
+            self.set_targets(self.scale, self.wide, samples);
+        }
+    }
+
+    /// How the picture is scaled up to the window (see `Upscaling`).
+    pub fn set_upscaling(&mut self, upscaling: Upscaling) {
+        self.upscaling = upscaling;
     }
 
     /// How much wider than 4:3 the EFB is exactly (its width is a whole
@@ -256,11 +303,13 @@ impl Renderer {
         efb_size(1, self.wide).width as f32 / EFB_WIDTH
     }
 
-    fn set_targets(&mut self, scale: u32, wide: f32) {
-        if (scale, wide) == (self.scale, self.wide) {
+    fn set_targets(&mut self, scale: u32, wide: f32, msaa: u32) {
+        if (scale, wide, msaa) == (self.scale, self.wide, self.msaa) {
             return;
         }
-        let [efb, depth, xfb] = targets(&self.device, scale, wide);
+        let ([efb, depth, xfb], msaa_view) = targets(&self.device, scale, wide, msaa);
+        self.msaa = msaa;
+        self.msaa_view = msaa_view;
         self.efb_view = efb.create_view(&Default::default());
         self.efb = efb;
         self.depth_view = depth.create_view(&Default::default());
@@ -290,7 +339,7 @@ impl Renderer {
 
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, scale: u32) -> Self {
         let scale = scale.max(1);
-        let [efb, depth, xfb] = targets(&device, scale, 1.0);
+        let ([efb, depth, xfb], _) = targets(&device, scale, 1.0, 1);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tev"),
@@ -359,6 +408,8 @@ impl Renderer {
             efb_view: efb.create_view(&Default::default()),
             efb,
             depth_view: depth.create_view(&Default::default()),
+            msaa: 1,
+            msaa_view: None,
             xfb_view: xfb.create_view(&Default::default()),
             xfb,
             xfb_rect: None,
@@ -380,6 +431,8 @@ impl Renderer {
             white,
             frame: 0,
             blit: None,
+            upscaling: Upscaling::Bilinear,
+            fsr: None,
             grab_target: None,
             grab_buffer: None,
         }
@@ -461,7 +514,7 @@ impl Renderer {
                 stencil: Default::default(),
                 bias: Default::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState { count: self.msaa, ..Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &self.shader,
                 entry_point: Some("fs"),
@@ -918,8 +971,8 @@ impl Renderer {
                     let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("efb"),
                         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &self.efb_view,
-                            resolve_target: None,
+                            view: self.msaa_view.as_ref().unwrap_or(&self.efb_view),
+                            resolve_target: self.msaa_view.as_ref().map(|_| &self.efb_view),
                             ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
                         })],
                         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -982,8 +1035,8 @@ impl Renderer {
                         enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("efb clear"),
                             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &self.efb_view,
-                                resolve_target: None,
+                                view: self.msaa_view.as_ref().unwrap_or(&self.efb_view),
+                                resolve_target: self.msaa_view.as_ref().map(|_| &self.efb_view),
                                 ops: wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(wgpu::Color {
                                         r: c(color[0]),
@@ -1109,6 +1162,14 @@ impl Renderer {
     /// within `viewport` (x, y, width, height); the rest is black.
     pub fn present(&mut self, target: &wgpu::TextureView, format: wgpu::TextureFormat, viewport: [f32; 4]) {
         let uv = self.xfb_uv();
+        if let Upscaling::Fsr { sharpness } = self.upscaling {
+            let size = efb_size(self.scale, self.wide);
+            let src = [uv[0] * size.width as f32, uv[1] * size.height as f32, uv[2] * size.width as f32, uv[3] * size.height as f32];
+            // Only worth it scaling up.
+            if viewport[2] > 0.0 && viewport[3] > src[3] + 0.5 {
+                return self.present_fsr(target, format, viewport, src, sharpness);
+            }
+        }
         self.blit(format);
         let blit = self.blit.as_ref().unwrap();
         self.queue.write_buffer(&blit.uniform, 0, bytemuck::cast_slice(&uv));
@@ -1141,6 +1202,147 @@ impl Renderer {
                 pass.set_bind_group(0, &group, &[]);
                 pass.draw(0..3, 0..1);
             }
+        }
+        self.queue.submit([enc.finish()]);
+    }
+
+    fn fsr(&mut self, format: wgpu::TextureFormat) {
+        if self.fsr.as_ref().is_some_and(|f| f.format == format) {
+            return;
+        }
+        let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("fsr"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("fsr.wgsl").into()),
+        });
+        let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("fsr"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("fsr"),
+            bind_group_layouts: &[&layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = |entry: &str, format| {
+            self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(entry),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some("fsr_vs"), compilation_options: Default::default(), buffers: &[] },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                multiview: None,
+                cache: None,
+            })
+        };
+        let uniform = |label| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: 32,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        self.fsr = Some(Fsr {
+            format,
+            easu: pipeline("easu_fs", EFB_FORMAT),
+            rcas: pipeline("rcas_fs", format),
+            layout,
+            easu_uniform: uniform("easu"),
+            rcas_uniform: uniform("rcas"),
+            upscaled: None,
+        });
+    }
+
+    /// `present` with FSR 1: the source rectangle `src` (xfb pixels) is
+    /// scaled up to the viewport by EASU, then sharpened into `target`.
+    fn present_fsr(&mut self, target: &wgpu::TextureView, format: wgpu::TextureFormat, viewport: [f32; 4], src: [f32; 4], sharpness: f32) {
+        self.fsr(format);
+        let [x, y, w, h] = viewport;
+        let size = wgpu::Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 };
+        let fsr = self.fsr.as_mut().unwrap();
+        if fsr.upscaled.as_ref().is_none_or(|t| t.size() != size) {
+            fsr.upscaled = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("fsr upscaled"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: EFB_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            }));
+        }
+        let fsr = self.fsr.as_ref().unwrap();
+        let upscaled = fsr.upscaled.as_ref().unwrap().create_view(&Default::default());
+        let out = [w, h, sharpness.clamp(0.0, 1.0), 0.0];
+        self.queue.write_buffer(&fsr.easu_uniform, 0, bytemuck::cast_slice(&[src, out]));
+        self.queue.write_buffer(&fsr.rcas_uniform, 0, bytemuck::cast_slice(&[[x, y, w, h], out]));
+        let group = |uniform: &wgpu::Buffer, view: &wgpu::TextureView| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fsr"),
+                layout: &fsr.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+                ],
+            })
+        };
+        let (easu_group, rcas_group) = (group(&fsr.easu_uniform, &self.xfb_view), group(&fsr.rcas_uniform, &upscaled));
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        let pass = |enc: &mut wgpu::CommandEncoder, view: &wgpu::TextureView, label| {
+            enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some(label),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            })
+            .forget_lifetime()
+        };
+        {
+            let mut p = pass(&mut enc, &upscaled, "easu");
+            p.set_pipeline(&fsr.easu);
+            p.set_bind_group(0, &easu_group, &[]);
+            p.draw(0..3, 0..1);
+        }
+        {
+            let mut p = pass(&mut enc, target, "rcas");
+            p.set_viewport(x, y, w, h, 0.0, 1.0);
+            p.set_pipeline(&fsr.rcas);
+            p.set_bind_group(0, &rcas_group, &[]);
+            p.draw(0..3, 0..1);
         }
         self.queue.submit([enc.finish()]);
     }

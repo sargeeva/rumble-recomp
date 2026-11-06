@@ -61,9 +61,14 @@ resolution = "native"              # or { width = 2560, height = 1440 }
 aspect = "auto"                    # auto | 4:3 | 16:9 | 16:10 | 21:9 | 32:9 | stretch
 widescreen_hack = true             # Hor+ FOV widening; false = pillarboxed 4:3
 render_scale = 1.0                 # internal resolution multiplier
+msaa = false                       # 4x MSAA
+upscaling = "bilinear"             # bilinear | fsr (FSR 1)
+sharpness = 0.8                    # FSR's sharpening, 0-1
 ```
 
 With the widescreen hack on, 3D perspective projections get their x scale multiplied by `(4/3) / aspect`. The HUD stays 4:3 and centered.
+
+The game renders at a whole multiple of its 640x528 framebuffer, the nearest to the window's height times `render_scale`. Above the window's size (`render_scale` over 1, supersampling), the picture is scaled down with each pixel averaging all it covers (`blit.wgsl`). Below it, it is scaled up bilinearly, or with AMD FidelityFX Super Resolution 1 (`fsr.wgsl`: EASU, then RCAS sharpening). With MSAA, the game draws into a 4x multisampled framebuffer that each pass resolves into the usual one, so the game's copies of it (shadows, the minimap) read it as before. Temporal upscalers (FSR 2/3, DLSS) would need motion vectors the game's draws don't have, and it is cheap enough to render above native anyway.
 
 ## Build output
 

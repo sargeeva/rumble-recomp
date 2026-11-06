@@ -54,6 +54,22 @@ pub struct DisplayConfig {
     /// Internal render resolution relative to the output (e.g. 2.0 = SSAA).
     pub render_scale: f32,
     pub vsync: bool,
+    /// Draw with 4x MSAA.
+    pub msaa: bool,
+    /// How the picture is scaled up to the window when it renders below
+    /// the window's resolution.
+    pub upscaling: Upscaler,
+    /// FSR's sharpening, 0 (none) to 1.
+    pub sharpness: f32,
+}
+
+/// See `DisplayConfig::upscaling`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Upscaler {
+    Bilinear,
+    /// AMD FidelityFX Super Resolution 1.
+    Fsr,
 }
 
 impl Default for DisplayConfig {
@@ -65,6 +81,9 @@ impl Default for DisplayConfig {
             widescreen_hack: true,
             render_scale: 1.0,
             vsync: true,
+            msaa: false,
+            upscaling: Upscaler::Bilinear,
+            sharpness: 0.8,
         }
     }
 }

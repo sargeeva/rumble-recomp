@@ -9,7 +9,7 @@
 use crate::net::PortOpening;
 use crate::config::{Config, Multiplayer};
 use crate::controls::{Action, ControlsConfig, StickTurn};
-use crate::display::{Aspect, NamedResolution, Resolution};
+use crate::display::{Aspect, NamedResolution, Resolution, Upscaler};
 use winit::event::WindowEvent;
 use winit::keyboard::KeyCode;
 use winit::window::Window;
@@ -447,8 +447,34 @@ impl Page<'_> {
             ui.end_row();
 
             ui.label("Render scale");
-            changed |= ui.add(egui::Slider::new(&mut d.render_scale, 0.5..=4.0).step_by(0.5).suffix("x")).changed();
+            changed |= ui
+                .add(egui::Slider::new(&mut d.render_scale, 0.5..=4.0).step_by(0.5).suffix("x"))
+                .on_hover_text("Above 1x renders sharper than the window and scales down (supersampling, the smoothest edges). Below 1x renders lower and scales up.")
+                .changed();
             ui.end_row();
+
+            ui.label("Anti-aliasing");
+            ui.horizontal(|ui| {
+                changed |= ui.selectable_value(&mut d.msaa, false, "Off").changed();
+                changed |= ui.selectable_value(&mut d.msaa, true, "4x MSAA").changed();
+            });
+            ui.end_row();
+
+            ui.label("Upscaling");
+            ui.horizontal(|ui| {
+                changed |= ui.selectable_value(&mut d.upscaling, Upscaler::Bilinear, "Bilinear").changed();
+                changed |= ui
+                    .selectable_value(&mut d.upscaling, Upscaler::Fsr, "FSR 1")
+                    .on_hover_text("AMD FidelityFX Super Resolution 1: sharper when the game renders below the window's resolution.")
+                    .changed();
+            });
+            ui.end_row();
+
+            if d.upscaling == Upscaler::Fsr {
+                ui.label("Sharpness");
+                changed |= ui.add(egui::Slider::new(&mut d.sharpness, 0.0..=1.0).step_by(0.05)).changed();
+                ui.end_row();
+            }
 
             ui.label("VSync");
             changed |= ui.checkbox(&mut d.vsync, "").changed();
