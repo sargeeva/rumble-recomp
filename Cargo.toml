@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/rumble-formats", "crates/rumble-recomp", "crates/rumble-runtime", "crates/rumble-blocks", "crates/rumble-jit", "crates/rumble-port"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
 

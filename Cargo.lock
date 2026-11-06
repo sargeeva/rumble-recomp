@@ -3417,7 +3417,7 @@ dependencies = [
 
 [[package]]
 name = "rumble-blocks"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rumble-recomp",
  "rumble-runtime",
@@ -3425,7 +3425,7 @@ dependencies = [
 
 [[package]]
 name = "rumble-formats"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes",
  "cbc",
@@ -3439,7 +3439,7 @@ dependencies = [
 
 [[package]]
 name = "rumble-jit"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -3452,7 +3452,7 @@ dependencies = [
 
 [[package]]
 name = "rumble-port"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -3488,14 +3488,14 @@ dependencies = [
 
 [[package]]
 name = "rumble-recomp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rumble-formats",
 ]
 
 [[package]]
 name = "rumble-runtime"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rumble-formats",
  "rumble-recomp",

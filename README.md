@@ -4,7 +4,7 @@ A PC port of **Pokémon Rumble** (USA, WiiWare, `WPSE`) in Rust, with optional [
 
 ## Playing
 
-1. Download `Rumble-Recomp-v0.2.0.zip` from [Releases](../../releases) and unzip it. It holds a `Rumble Recomp` folder with `Pokemon Rumble Setup.exe`.
+1. Download `Rumble-Recomp-v0.2.1.zip` from [Releases](../../releases) and unzip it. It holds a `Rumble Recomp` folder with `Pokemon Rumble Setup.exe`.
 2. Run `Pokemon Rumble Setup.exe`, choose your WAD (USA, `WPSE`) and your common key, and tick Rumble Weekend if you want it (setup can fetch its patches for you). Build.
 3. Play with the `Pokemon Rumble.exe` (or `Pokemon Rumble Weekend.exe`) that setup puts next to it. To join a friend's online game, use `Pokemon Rumble Client.exe`, which setup also makes (it needs no game files, so it can be sent to them). Saves stay in `data/<name>/nand` across rebuilds, and the in-game menu can import and export a Wii `data.bin` save.
 
