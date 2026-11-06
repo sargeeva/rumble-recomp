@@ -202,6 +202,10 @@ pub struct Renderer {
     white: wgpu::TextureView,
     frame: u64,
     blit: Option<Blit>,
+    /// Where `grab` draws the picture streamed to online players, and the
+    /// buffer it is read back through.
+    grab_target: Option<wgpu::Texture>,
+    grab_buffer: Option<wgpu::Buffer>,
 }
 
 fn efb_size(scale: u32, wide: f32) -> wgpu::Extent3d {
@@ -376,6 +380,8 @@ impl Renderer {
             white,
             frame: 0,
             blit: None,
+            grab_target: None,
+            grab_buffer: None,
         }
     }
 
@@ -1137,6 +1143,63 @@ impl Renderer {
             }
         }
         self.queue.submit([enc.finish()]);
+    }
+
+    /// The last finished frame scaled to `width` x `height`, drawn as
+    /// `present` draws it into a window of `format` and read back, for
+    /// streaming to online players: tightly packed 4-byte pixels in
+    /// `format`'s byte order.
+    pub fn grab(&mut self, format: wgpu::TextureFormat, width: u32, height: u32) -> Result<Vec<u8>> {
+        let (width, height) = (width.max(1), height.max(1));
+        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        if self.grab_target.as_ref().is_none_or(|t| t.size() != size || t.format() != format) {
+            self.grab_target = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("stream"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            }));
+        }
+        let target = self.grab_target.clone().unwrap();
+        self.present(&target.create_view(&Default::default()), format, [0.0, 0.0, width as f32, height as f32]);
+
+        let row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let bytes = (row * height) as u64;
+        if self.grab_buffer.as_ref().is_none_or(|b| b.size() != bytes) {
+            self.grab_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stream readback"),
+                size: bytes,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }));
+        }
+        let buffer = self.grab_buffer.as_ref().unwrap();
+        let mut enc = self.device.create_command_encoder(&Default::default());
+        enc.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row), rows_per_image: Some(height) },
+            },
+            size,
+        );
+        self.queue.submit([enc.finish()]);
+        let slice = buffer.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::PollType::Wait)?;
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        {
+            let data = slice.get_mapped_range();
+            for line in data.chunks(row as usize).take(height as usize) {
+                pixels.extend_from_slice(&line[..(width * 4) as usize]);
+            }
+        }
+        buffer.unmap();
+        Ok(pixels)
     }
 
     /// Writes the last XFB copy to a PNG.

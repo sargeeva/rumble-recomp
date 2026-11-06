@@ -55,6 +55,15 @@ pub struct Remotes {
     /// instruction whenever it is played, so a recording replays exactly.
     latching: AtomicBool,
     latched: [AtomicU32; CHANNELS],
+    /// Set when the game draws its Pokemon selection screen (where players
+    /// join multiplayer), taken by the host to know it is showing.
+    selecting: AtomicBool,
+    /// Players' names, which the game shows over their health bars
+    /// (`hle::nametag`).
+    names: std::sync::Mutex<[Option<String>; CHANNELS]>,
+    /// End Multiplayer was chosen in the game's pause menu, for the host to
+    /// take (`hle::pause`).
+    end_requested: AtomicBool,
 }
 
 impl Remotes {
@@ -94,6 +103,38 @@ impl Remotes {
     fn held(&self, chan: usize) -> u32 {
         let held = |a: &[AtomicU32; CHANNELS]| a.get(chan).map_or(0, |b| b.load(Ordering::Relaxed));
         held(&self.buttons) | held(&self.scripted)
+    }
+
+    /// Shows `name` over player `chan`'s health bar (none: the game's own).
+    pub fn set_name(&self, chan: usize, name: Option<&str>) {
+        let mut names = self.names.lock().unwrap();
+        if let Some(slot) = names.get_mut(chan) {
+            if slot.as_deref() != name {
+                *slot = name.map(str::to_string);
+            }
+        }
+    }
+
+    pub fn name(&self, chan: usize) -> Option<String> {
+        self.names.lock().unwrap().get(chan).cloned().flatten()
+    }
+
+    pub fn request_end(&self) {
+        self.end_requested.store(true, Ordering::Relaxed);
+    }
+
+    pub fn take_end_requested(&self) -> bool {
+        self.end_requested.swap(false, Ordering::Relaxed)
+    }
+
+    /// The game drew its Pokemon selection screen.
+    pub fn mark_selecting(&self) {
+        self.selecting.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the selection screen was drawn since the last call.
+    pub fn take_selecting(&self) -> bool {
+        self.selecting.swap(false, Ordering::Relaxed)
     }
 
     /// From now on the game sees what is held at each `latch`.

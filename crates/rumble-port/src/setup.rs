@@ -7,6 +7,9 @@
 //!   `<name>.exe` next to it, `name` being "Pokemon Rumble" or
 //!   "Pokemon Rumble Weekend".
 //! - `<name>.exe` plays the build in `data/<name>/`.
+//! - `Pokemon Rumble Client.exe`, also made by each build, joins someone
+//!   else's online game (`client`): it shows the host's picture, so it
+//!   needs no game files of its own, and one serves both builds.
 //!
 //! Rebuilding replaces a build's game files and keeps its save
 //! (`data/<name>/nand`). The two builds keep separate saves. Each built exe's
@@ -88,6 +91,10 @@ pub fn build_name(weekend: bool) -> &'static str {
 pub fn data_dir(name: &str) -> PathBuf {
     Path::new("data").join(name)
 }
+
+/// The client app's exe name (without `.exe`); `main` opens the client for
+/// an exe whose name has "client" in it.
+pub const CLIENT_NAME: &str = "Pokemon Rumble Client";
 
 /// Whether `stem` (an exe's file name without `.exe`) is the setup app.
 pub fn is_setup(stem: &str) -> bool {
@@ -205,9 +212,12 @@ pub fn build(req: &Request, progress: &dyn Fn(f32, &str)) -> Result<&'static str
         std::fs::remove_dir_all(&old)?;
     }
     let exe = std::env::current_exe()?;
-    let target = PathBuf::from(format!("{name}.exe"));
-    if exe.canonicalize()? != target.canonicalize().unwrap_or_default() {
-        std::fs::copy(&exe, &target).with_context(|| format!("writing {} (close the game if it is open)", target.display()))?;
+    for (stem, what) in [(name, "the game"), (CLIENT_NAME, "the client")] {
+        let target = PathBuf::from(format!("{stem}.exe"));
+        if exe.canonicalize()? == target.canonicalize().unwrap_or_default() {
+            continue;
+        }
+        std::fs::copy(&exe, &target).with_context(|| format!("writing {} (close {what} if it is open)", target.display()))?;
         // Without a logo (a patch moved it), the exe keeps setup's icon.
         if let Some(logo) = &logo {
             set_icon(&target, &logo.trimmed().icon_images()).with_context(|| format!("setting {}'s icon", target.display()))?;
@@ -514,6 +524,7 @@ impl eframe::App for SetupApp {
             ui.add_space(14.0);
             let name = build_name(self.weekend);
             ui.label(format!("Creates {name}.exe in this folder. Rebuilding keeps its save."));
+            ui.label(format!("Also creates {CLIENT_NAME}.exe, for joining a friend's online game."));
             ui.add_space(6.0);
             let ready = self.wad_note.as_ref().is_some_and(|n| n.1)
                 && Path::new(&self.key).is_file()

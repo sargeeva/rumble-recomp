@@ -14,7 +14,9 @@ use crate::config::{Config, Multiplayer};
 use crate::audio::{Audio, AudioQueue, Mix};
 use crate::controls::{Bindings, Gamepads};
 use crate::display::{Aspect, DisplayConfig, NamedResolution, Resolution};
-use crate::menu::{Actions, Device, Menu};
+use crate::menu::{Actions, Device, Hosting, Menu, Overlay};
+use crate::net::{Host, Outbox, PortOpening, ToClient};
+use crate::video;
 use crate::remote::{self, Action, Recorder, Remote, Settings};
 use crate::saves;
 use rumble_formats::wiisave::Save;
@@ -123,6 +125,99 @@ struct Control {
     import: Mutex<Option<Save>>,
 }
 
+/// Encodes grabbed pictures for joiners on a thread of its own, one at a
+/// time (`busy` while it works, so the window doesn't wait): as H.264 when
+/// every joiner takes it and this PC has an encoder (`video`), else JPEG.
+struct Streamer {
+    pictures: std::sync::mpsc::SyncSender<(Vec<u8>, u32, u32, bool)>,
+    busy: Arc<AtomicBool>,
+}
+
+/// JPEG quality for streamed pictures.
+const STREAM_QUALITY: u8 = 80;
+
+impl Streamer {
+    fn new(outbox: Arc<Outbox>) -> Self {
+        let (pictures, rx) = sync_channel::<(Vec<u8>, u32, u32, bool)>(1);
+        let busy = Arc::new(AtomicBool::new(false));
+        let b = busy.clone();
+        let _ = std::thread::Builder::new().name("stream".into()).spawn(move || {
+            let mut encoder: Option<video::Encoder> = None;
+            let mut h264_failed = false;
+            for (pixels, width, height, bgra) in rx {
+                if outbox.h264() && !h264_failed {
+                    if encoder.as_ref().is_none_or(|e| (e.width, e.height) != (width, height)) {
+                        encoder = None;
+                        match video::Encoder::new(width, height) {
+                            Ok(e) => {
+                                eprintln!("streaming H.264 {width}x{height} with {}", e.name);
+                                encoder = Some(e);
+                            }
+                            Err(e) => {
+                                eprintln!("streaming JPEG: {e:#}");
+                                h264_failed = true;
+                            }
+                        }
+                    }
+                    if let Some(e) = encoder.as_mut() {
+                        let nv12 = video::to_nv12(&pixels, width, height, bgra);
+                        match e.encode(&nv12, outbox.take_want_key()) {
+                            Ok(frames) => {
+                                for (data, key) in frames {
+                                    outbox.send(&ToClient::Video { width: width as u16, height: height as u16, key, data });
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!("streaming JPEG: H.264 encoding failed: {err:#}");
+                                encoder = None;
+                                h264_failed = true;
+                            }
+                        }
+                        b.store(false, Ordering::Relaxed);
+                        continue;
+                    }
+                }
+                let color = if bgra { jpeg_encoder::ColorType::Bgra } else { jpeg_encoder::ColorType::Rgba };
+                let mut jpeg = Vec::with_capacity(pixels.len() / 8);
+                let jpeg_encoder = jpeg_encoder::Encoder::new(&mut jpeg, STREAM_QUALITY);
+                match jpeg_encoder.encode(&pixels, width as u16, height as u16, color) {
+                    Ok(()) => outbox.send(&ToClient::Picture(jpeg)),
+                    Err(e) => eprintln!("streaming: {e}"),
+                }
+                b.store(false, Ordering::Relaxed);
+            }
+        });
+        Self { pictures, busy }
+    }
+
+    fn busy(&self) -> bool {
+        self.busy.load(Ordering::Relaxed)
+    }
+
+    /// Hands over a grabbed picture in the window's pixel `format`.
+    fn encode(&self, pixels: Vec<u8>, width: u32, height: u32, format: wgpu::TextureFormat) {
+        let bgra = matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        self.busy.store(true, Ordering::Relaxed);
+        if self.pictures.try_send((pixels, width, height, bgra)).is_err() {
+            self.busy.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Ending multiplayer from the menu.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Ending {
+    No,
+    /// Waiting for the game's Pokemon selection screen.
+    Armed,
+    /// Players 2-4 are kept out; the count is frames since the screen was
+    /// last drawn.
+    Removing(u32),
+}
+
+/// How long a toast stays up.
+const TOAST_TIME: Duration = Duration::from_secs(4);
+
 pub fn run(cfg: Config, config_path: &Path, presses: Vec<boot::Press>, exec: boot::Exec) -> Result<()> {
     let event_loop = EventLoop::<Event>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
@@ -130,6 +225,9 @@ pub fn run(cfg: Config, config_path: &Path, presses: Vec<boot::Press>, exec: boo
     let control = Arc::new(Control::default());
     let remotes = Arc::new(Remotes::default());
     remotes.connect(0, true);
+    // What online players are sent: the emulator adds the sound, the
+    // window the pictures.
+    let outbox = Arc::new(Outbox::default());
     let mix = Arc::new(Mix::default());
     mix.set(&cfg.audio, false);
     let audio = Audio::open(mix.clone()).map_err(|e| eprintln!("sound off: {e:#}")).ok();
@@ -139,11 +237,12 @@ pub fn run(cfg: Config, config_path: &Path, presses: Vec<boot::Press>, exec: boo
         let build_dir = cfg.paths.build_dir.clone();
         let control = control.clone();
         let remotes = remotes.clone();
+        let outbox = outbox.clone();
         let threaded = cfg.game.threaded_graphics;
         let original_multiplayer = cfg.game.original_pedestal();
         let addons = cfg.addons.runtime();
         std::thread::Builder::new().name("emulation".into()).spawn(move || loop {
-            let result = emulate(build_dir.clone(), remotes.clone(), &presses, exec, threaded, original_multiplayer, addons, tx.clone(), sound.clone(), &mix, &proxy, &control);
+            let result = emulate(build_dir.clone(), remotes.clone(), &presses, exec, threaded, original_multiplayer, addons, tx.clone(), sound.clone(), &outbox, &mix, &proxy, &control);
             if control.quit.load(Ordering::Relaxed) || !control.restart.swap(false, Ordering::Relaxed) {
                 if let Err(e) = result {
                     let _ = proxy.send_event(Event::Stopped(format!("{e:#}")));
@@ -172,7 +271,15 @@ pub fn run(cfg: Config, config_path: &Path, presses: Vec<boot::Press>, exec: boo
         control: control.clone(),
         keys: HashSet::new(),
         gamepads: Gamepads::new(),
-        pad_names: Vec::new(),
+        overlay: Overlay::default(),
+        seated: [false; CHANNELS],
+        ending: Ending::No,
+
+        streamer: Streamer::new(outbox.clone()),
+        stream_height: None,
+        outbox,
+        host: None,
+        toasts: Vec::new(),
         focused: true,
         menu_open: false,
         fps: 0.0,
@@ -200,6 +307,7 @@ fn emulate(
     addons: rumble_runtime::hle::addons::Addons,
     tx: SyncSender<Vec<GpuCommand>>,
     sound: Option<Arc<AudioQueue>>,
+    outbox: &Outbox,
     mix: &Mix,
     proxy: &EventLoopProxy<Event>,
     control: &Control,
@@ -262,6 +370,9 @@ fn emulate(
         let (stop, ran) = cpu.run(&mut mem, SLICE, &mut |_| {});
         steps += ran;
         pace.busy += t.elapsed();
+        if !mem.audio.is_empty() && outbox.listening() {
+            outbox.send(&ToClient::Sound { rate: mem.audio_rate, samples: mem.audio.clone() });
+        }
         if let Some(q) = &sound {
             q.push(&mem.audio, mem.audio_rate);
             mem.audio.clear();
@@ -303,9 +414,25 @@ struct App {
     /// Keyboard keys held down.
     keys: HashSet<KeyCode>,
     gamepads: Gamepads,
-    /// The connected gamepads' names, in the order players are given to
-    /// them, for the menu.
-    pad_names: Vec<String>,
+    /// What the menu shows besides the config.
+    overlay: Overlay,
+    /// Remotes 2-4 that have had a player during multiplayer: they stay
+    /// connected after the player leaves (see `update_input`).
+    seated: [bool; CHANNELS],
+    /// Ending multiplayer (see `update_input`).
+    ending: Ending,
+
+    /// The online session this PC hosts, if any.
+    host: Option<Host>,
+    /// What online players are sent, and the thread that encodes pictures
+    /// for them.
+    outbox: Arc<Outbox>,
+    streamer: Streamer,
+    /// The picture height online players asked for, which the internal
+    /// resolution is raised to.
+    stream_height: Option<u16>,
+    /// Toasts and when each was shown.
+    toasts: Vec<(String, Instant)>,
     /// The config's control bindings, ready to look up.
     bindings: Bindings,
     /// Input counts only while the window has focus: gamepads keep their
@@ -355,6 +482,29 @@ fn create_gpu(window: Arc<Window>, display: &DisplayConfig) -> Result<Gpu> {
 }
 
 impl App {
+    /// Starts hosting an online session with the menu's name, port and
+    /// password.
+    fn start_hosting(&mut self) {
+        let o = &self.config.online;
+        match Host::start(o.port, &self.overlay.password, &o.name, self.outbox.clone()) {
+            Ok(host) => {
+                self.toasts.push((format!("Hosting {}'s session on port {}", host.name, host.port), Instant::now()));
+                self.host = Some(host);
+                self.overlay.host_error = None;
+            }
+            Err(e) => self.overlay.host_error = Some(format!("{e:#}")),
+        }
+        self.update_input();
+    }
+
+    /// Stops hosting; online players are disconnected.
+    fn stop_hosting(&mut self) {
+        if self.host.take().is_some() {
+            self.toasts.push(("Stopped hosting".into(), Instant::now()));
+        }
+        self.update_input();
+    }
+
     /// Asks for a data.bin, checks it, and has the emulation thread import
     /// it and restart the game.
     fn import_save(&mut self) {
@@ -410,8 +560,32 @@ impl App {
     /// on: then each plays as its player (`pad_channel`), and remotes 2-4
     /// are connected while a gamepad plays as them.
     fn update_input(&mut self) {
+        if self.remotes.take_end_requested() {
+            // The game's pause menu: its Pokemon selection screen opens next.
+            self.ending = Ending::Armed;
+            self.toasts.push(("Pick your Pokémon to continue alone".into(), Instant::now()));
+        }
+        // Ending multiplayer: once the game shows its Pokemon selection
+        // screen, players 2-4 are removed there, where a remote that goes
+        // away doesn't stop the game; they stay out until it closes.
+        let selecting = self.remotes.take_selecting();
+        self.ending = match self.ending {
+            Ending::Armed if selecting => {
+                if let Some(host) = &self.host {
+                    host.remove_all();
+                }
+                self.toasts.push(("Multiplayer ended: players 2-4 removed".into(), Instant::now()));
+                Ending::Removing(0)
+            }
+            Ending::Removing(_) if selecting => Ending::Removing(0),
+            // A few frames without the screen: it has closed.
+            Ending::Removing(n) if n < 30 => Ending::Removing(n + 1),
+            Ending::Removing(_) => Ending::No,
+            other => other,
+        };
+        self.overlay.ending_multiplayer = self.ending == Ending::Armed;
         let active = !self.menu_open && self.focused;
-        let local = self.config.game.multiplayer == Multiplayer::Local;
+        let local = self.config.game.multiplayer != Multiplayer::Off;
         let mut bits = [0u32; CHANNELS];
         let mut present = [false; CHANNELS];
         present[0] = true;
@@ -426,10 +600,60 @@ impl App {
                 bits[chan] |= held;
             }
         }
-        self.pad_names = pads.into_iter().map(|(name, _)| name).collect();
+        self.overlay.pads = pads.into_iter().map(|(name, _)| name).collect();
+        let height = self.outbox.height();
+        if height != self.stream_height {
+            self.stream_height = height;
+            self.fit_renderer();
+        }
+        // Online players play on channels this PC's pads don't, whether or
+        // not the window has focus.
+        if let Some(host) = &self.host {
+            let mut lobby = host.lobby();
+            lobby.local = present;
+            lobby.local[0] = true;
+            for (chan, p) in lobby.players.iter().enumerate() {
+                if let Some(p) = p {
+                    present[chan] = true;
+                    bits[chan] |= p.buttons;
+                }
+            }
+            // Names for the tags over the players' health bars.
+            self.remotes.set_name(0, Some(&host.name));
+            for (chan, p) in lobby.players.iter().enumerate().skip(1) {
+                self.remotes.set_name(chan, p.as_ref().map(|p| p.name.as_str()));
+            }
+            let mut players = vec![(1, host.name.clone())];
+            players.extend(lobby.players.iter().enumerate().filter_map(|(c, p)| p.as_ref().map(|p| (c as u8 + 1, p.name.clone()))));
+            drop(lobby);
+            while let Ok(msg) = host.events.try_recv() {
+                self.toasts.push((msg, Instant::now()));
+            }
+            self.overlay.hosting = Some(Hosting { port: host.port, lan: host.lan, port_opening: host.port_opening(), players });
+        } else {
+            self.overlay.hosting = None;
+            for chan in 0..CHANNELS {
+                self.remotes.set_name(chan, None);
+            }
+        }
+        self.toasts.retain(|(_, at)| at.elapsed() < TOAST_TIME);
+        self.overlay.toasts = self.toasts.iter().map(|(m, _)| m.clone()).collect();
+        // A player who leaves keeps their remote, idle: the game would stop
+        // at "Connection with the Wii Remote has been interrupted" until it
+        // came back. The next player to join takes the seat over; one not
+        // joining at the game's multiplayer player select drops out.
+        for chan in 1..CHANNELS {
+            if !local || matches!(self.ending, Ending::Removing(_)) {
+                self.seated[chan] = false;
+                present[chan] = false;
+                bits[chan] = 0;
+            } else if present[chan] {
+                self.seated[chan] = true;
+            }
+        }
         for chan in 0..CHANNELS {
             self.remotes.set_buttons(chan, bits[chan]);
-            self.remotes.connect(chan, present[chan]);
+            self.remotes.connect(chan, present[chan] || self.seated[chan]);
         }
     }
 
@@ -521,7 +745,10 @@ impl App {
     fn fit_renderer(&mut self) {
         let Some(gpu) = self.gpu.as_mut() else { return };
         let size = (gpu.config.width, gpu.config.height);
-        gpu.renderer.set_scale(efb_scale(&self.config.display, size));
+        // Online players can ask for a sharper picture than this window
+        // shows.
+        let stream = self.stream_height.map_or(1, |h| (h as f32 / 528.0).round().max(1.0) as u32);
+        gpu.renderer.set_scale(efb_scale(&self.config.display, size).max(stream));
         gpu.renderer.set_widescreen(self.config.display.resolve_for(size).widescreen());
         self.control.widescreen.store(gpu.renderer.widescreen().to_bits(), Ordering::Relaxed);
     }
@@ -550,11 +777,30 @@ impl App {
             resolved.hud_viewport()
         };
         gpu.renderer.present(&view, gpu.config.format, [vp.x as f32, vp.y as f32, vp.width as f32, vp.height as f32]);
+        if let Some(height) = self.stream_height.filter(|_| !self.streamer.busy()) {
+            // The same shape as here, `height` tall, even for the encoder.
+            let height = height as u32;
+            let width = ((height as f32 * vp.width as f32 / vp.height.max(1) as f32) / 2.0).round() as u32 * 2;
+            match gpu.renderer.grab(gpu.config.format, width, height) {
+                Ok(pixels) => self.streamer.encode(pixels, width, height, gpu.config.format),
+                Err(e) => eprintln!("streaming: {e:#}"),
+            }
+        }
+        // The menu pauses the game, and with it `update_input`: the router's
+        // answer is picked up here, redrawing until it comes.
+        if let (Some(host), Some(hosting)) = (&self.host, self.overlay.hosting.as_mut()) {
+            hosting.port_opening = host.port_opening();
+            if hosting.port_opening == PortOpening::Trying {
+                if let Some(w) = &self.window {
+                    w.request_redraw();
+                }
+            }
+        }
         let mut actions = Actions::default();
         let fps = self.config.game.show_fps.then(|| format!("{:.0} FPS", self.fps));
-        if self.menu_open || fps.is_some() {
+        if self.menu_open || fps.is_some() || !self.overlay.toasts.is_empty() {
             if let Some(window) = &self.window {
-                actions = gpu.menu.draw(window, &gpu.device, &gpu.queue, &view, size, &mut self.config, &self.pad_names, self.menu_open, fps.as_deref());
+                actions = gpu.menu.draw(window, &gpu.device, &gpu.queue, &view, size, &mut self.config, &mut self.overlay, self.menu_open, fps.as_deref());
             }
         }
         frame.present();
@@ -751,6 +997,16 @@ impl ApplicationHandler<Event> for App {
                 }
                 if self.menu_open {
                     self.capture_pad();
+                }
+                if actions.end_multiplayer {
+                    self.ending = Ending::Armed;
+                    self.toasts.push(("Open the pause menu, choose Multiplayer, and pick your Pokémon to continue alone".into(), Instant::now()));
+                }
+                if actions.start_hosting {
+                    self.start_hosting();
+                }
+                if actions.stop_hosting || (self.host.is_some() && self.config.game.multiplayer != Multiplayer::Online) {
+                    self.stop_hosting();
                 }
                 if actions.import_save {
                     self.import_save();

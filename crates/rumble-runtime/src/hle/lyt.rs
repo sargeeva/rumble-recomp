@@ -13,7 +13,7 @@
 //! (A HUD root pane's draw returns through `GuestReturn`: that one extra
 //! instruction stands for the second at its entry.)
 
-use super::{push_guest_frame, Replacement, TAG_HUD};
+use super::{push_guest_frame, Replacement, TAG_HUD, TAG_NAME};
 use crate::cpu::{Cpu, SPR_LR};
 use crate::mem::{Fault, Memory};
 
@@ -63,6 +63,12 @@ pub(super) fn enter(cpu: &mut Cpu, mem: &mut Memory, frame: u32, counted: u32) -
 fn layout_build(cpu: &mut Cpu, mem: &mut Memory) -> Result<(), Fault> {
     let (layout, res) = (cpu.gpr[3], cpu.gpr[4]);
     let side = hud_side(mem, res);
+    let select = is_selection(mem, res);
+    let list = &mut mem.multiplay.selection_layouts;
+    list.retain(|&l| l != layout);
+    if select {
+        list.push(layout);
+    }
     let hud = &mut mem.gx.hud_layouts;
     hud.retain(|&(l, _)| l != layout);
     if let Some(side) = side {
@@ -76,7 +82,16 @@ fn layout_build(cpu: &mut Cpu, mem: &mut Memory) -> Result<(), Fault> {
 fn pane_draw(cpu: &mut Cpu, mem: &mut Memory) -> Result<(), Fault> {
     let pane = cpu.gpr[3];
     super::title::pane_draw(mem, pane);
+    if let Some(first) = super::nametag::pane_draw(mem, pane, cpu.gpr[4], cpu.pc - 4) {
+        // A name tag, drawn in passes instead of the box (`nametag`).
+        cpu.gpr[3] = first;
+        push_guest_frame(cpu, mem, 0, TAG_NAME)?;
+        return enter(cpu, mem, 0x20, 0);
+    }
     let ram = mem.ram();
+    if mem.multiplay.selection_layouts.iter().any(|&l| ram.u32(l + ROOT_PANE) == pane) {
+        mem.input.remotes.mark_selecting();
+    }
     let side = mem.gx.hud_layouts.iter().find(|&&(l, _)| ram.u32(l + ROOT_PANE) == pane).map(|&(_, s)| s);
     if let Some(side) = side {
         mem.gx.set_hud_anchor(side);
@@ -106,6 +121,12 @@ fn hud_side(mem: &Memory, res: u32) -> Option<i8> {
     } else {
         None
     }
+}
+
+/// Whether a `.brlyt` at `res` is a player's panel on the Pokemon
+/// selection screen (`dlgpiisel_p_root`), where players join multiplayer.
+fn is_selection(mem: &Memory, res: u32) -> bool {
+    names(mem, res).is_some_and(|(panes, _)| ["HELP0", "PIISPEC", "PLAYERID"].iter().all(|n| panes.iter().any(|p| p == n)))
 }
 
 /// The pane and texture names in a `.brlyt` in RAM.

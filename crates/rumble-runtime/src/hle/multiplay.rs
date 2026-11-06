@@ -35,11 +35,20 @@ pub struct State {
     pub weekend: bool,
     /// The shiny count is answered (`super::playinfo::install`).
     pub shiny_count: bool,
+    /// Layouts of the Pokemon selection screen's player panels
+    /// (`super::lyt`).
+    pub selection_layouts: Vec<u32>,
+    /// Health bars' `root` panes and whose bar each is (`super::nametag`).
+    pub bar_players: Vec<(u32, u8)>,
+    /// The health bar text box being drawn (`super::nametag`).
+    pub bar_draw: Option<super::nametag::BarDraw>,
     /// The addons the player picked (`super::addons`).
     pub addons: super::addons::Addons,
     /// The title copyright's length in characters, until the "Recomped"
     /// line is added to it (`super::title`).
     pub title_note: Option<u32>,
+    /// End Multiplayer in the pause menu (`super::pause`).
+    pub pause: super::pause::State,
 }
 
 /// The model the pedestal script loads, and its animation (the original's
@@ -66,6 +75,7 @@ const DITTO_SCALE: f32 = 1.4;
 /// out too (see `hide_pause_entry`).
 pub fn configure(mem: &mut Memory, original: bool) {
     mem.multiplay.original = original;
+    super::pause::configure(mem);
     mem.multiplay.weekend = super::playinfo::is_weekend(mem);
     if mem.multiplay.weekend {
         if let Err(e) = super::playinfo::install(mem) {
@@ -117,6 +127,8 @@ pub fn unpacked(mem: &mut Memory, dst: u32, out: &mut [u8]) {
         return;
     }
     super::title::unpacked(mem, out);
+    super::nametag::unpacked(out);
+    super::pause::unpacked(mem, out);
     super::addons::unpacked(mem, out);
     if mem.multiplay.weekend {
         super::playinfo::unpacked(mem, out);

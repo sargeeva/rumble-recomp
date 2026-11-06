@@ -15,6 +15,7 @@ pub struct Config {
     pub game: GameConfig,
     pub mods: ModsConfig,
     pub addons: AddonsConfig,
+    pub online: OnlineConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,7 +28,8 @@ pub struct GameConfig {
     pub threaded_graphics: bool,
     /// Show the game's frames per second in the top right corner.
     pub show_fps: bool,
-    /// Multiplayer: off, or local (extra gamepads play as players 2-4).
+    /// Multiplayer: off, local (extra gamepads play as players 2-4) or
+    /// online (players join over the network too).
     /// With it on, the hub has the game's own multiplayer pedestal and the
     /// pause menu its Multiplayer entry. Read at start.
     pub multiplayer: Multiplayer,
@@ -46,6 +48,26 @@ pub enum Multiplayer {
     Off,
     /// Players 2-4 on this PC's gamepads.
     Local,
+    /// Players 2-4 on this PC's gamepads or joining over the network.
+    Online,
+}
+
+/// Online play: this player's name, the port a hosted session listens
+/// on, and for joining, the last host and the picture height asked for.
+/// Passwords are asked each time and never saved.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OnlineConfig {
+    pub name: String,
+    pub port: u16,
+    pub last_host: String,
+    pub quality: u16,
+}
+
+impl Default for OnlineConfig {
+    fn default() -> Self {
+        Self { name: String::new(), port: crate::net::DEFAULT_PORT, last_host: String::new(), quality: 1080 }
+    }
 }
 
 impl Default for GameConfig {
@@ -123,6 +145,7 @@ impl Default for Config {
             game: GameConfig::default(),
             mods: ModsConfig::default(),
             addons: AddonsConfig::default(),
+            online: OnlineConfig::default(),
         }
     }
 }

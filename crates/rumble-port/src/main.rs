@@ -8,6 +8,10 @@ mod disasm;
 mod display;
 mod icon;
 mod mods;
+mod net;
+mod video;
+mod client;
+mod join;
 mod profile;
 mod remote;
 mod render;
@@ -129,6 +133,15 @@ enum Cmd {
         threaded: bool,
     },
     /// Run the game in a window.
+    /// Join an online session from the console and play as the next free
+    /// player with this PC's gamepads (without seeing the game yet).
+    Join {
+        /// The host, `ip:port` (asked for if left out).
+        addr: Option<String>,
+    },
+    /// Open the client app, for joining an online session (what
+    /// `Pokemon Rumble Client.exe` opens).
+    Client,
     Run {
         /// Scripted presses on remote 1, as for `boot`; merged with the
         /// keyboard and gamepads.
@@ -178,6 +191,8 @@ fn main() -> Result<()> {
             let opts = boot::Options { no_trace, capture, exec, profile, replay, widescreen, wav, threaded, original_multiplayer, addons: cfg.addons.runtime() };
             boot::run(&cfg.paths.build_dir, steps, dump, &press, &opts)
         }
+        Cmd::Join { addr } => join::run(&cfg, addr),
+        Cmd::Client => client::run(cfg, cli.config.clone()),
         Cmd::Run { press, interp, jit } => run::run(cfg, &cli.config, press, boot::Exec::new(interp, false, jit)),
         Cmd::Disasm => disasm::run(&cfg.paths.build_dir),
         Cmd::Recomp { max_len } => codegen::run(&cfg.paths.build_dir, max_len.max(1)),
@@ -220,6 +235,9 @@ fn launch() -> Result<()> {
     let stem = exe.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let config_path = PathBuf::from("config.toml");
     let mut cfg = Config::load_or_create(&config_path)?;
+    if stem.to_ascii_lowercase().contains("client") {
+        return client::run(cfg, config_path);
+    }
     let data = setup::data_dir(&stem);
     if !setup::is_setup(&stem) && data.join("main.dol").is_file() {
         cfg.paths.build_dir = data;

@@ -28,6 +28,11 @@ egui = "0.32.0"
 egui-wgpu = "0.32.0"
 egui-winit = "0.32.0"
 eframe = { version = "0.32.3", default-features = false, features = ["wgpu", "default_fonts"] }
+spake2 = "0.4"
+chacha20poly1305 = "0.10"
+jpeg-encoder = "0.6"
+jpeg-decoder = "0.3"
+igd-next = "0.18.0"
 
 [build-dependencies]
 png = "0.17.16"
@@ -39,6 +44,7 @@ default = []
 jit = ["dep:rumble-jit"]
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_System_Variant"] }
 windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",

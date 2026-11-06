@@ -12,6 +12,8 @@
 pub mod addons;
 mod cx;
 pub mod multiplay;
+mod nametag;
+mod pause;
 mod playinfo;
 mod title;
 mod lyt;
@@ -36,7 +38,8 @@ pub struct Replacement {
     run: fn(&mut Cpu, &mut Memory) -> Result<(), Fault>,
 }
 
-static REPLACEMENTS: &[&[Replacement]] = &[&[GUEST_RETURN], wpad::REPLACEMENTS, cx::REPLACEMENTS, mtx::REPLACEMENTS, lyt::REPLACEMENTS, playinfo::REPLACEMENTS];
+static REPLACEMENTS: &[&[Replacement]] =
+    &[&[GUEST_RETURN], wpad::REPLACEMENTS, cx::REPLACEMENTS, mtx::REPLACEMENTS, lyt::REPLACEMENTS, playinfo::REPLACEMENTS, pause::REPLACEMENTS];
 
 /// Placed after each replaced entry, where `call_guest` returns.
 const GUEST_RETURN: Replacement = Replacement { name: "GuestReturn", sig: &[], run: guest_return };
@@ -50,6 +53,10 @@ const GUEST_FRAME: u32 = 24;
 const TAG_NONE: u32 = 0;
 /// The guest function drew a HUD layout (`lyt`).
 const TAG_HUD: u32 = 1;
+/// The guest function drew a pass of a name tag (`nametag`).
+const TAG_NAME: u32 = 2;
+/// The pause menu's list widget returned (`pause`).
+const TAG_PAUSE: u32 = 3;
 
 fn all() -> impl Iterator<Item = &'static Replacement> {
     REPLACEMENTS.iter().flat_map(|r| r.iter())
@@ -121,8 +128,11 @@ fn push_guest_frame(cpu: &mut Cpu, mem: &mut Memory, result: u32, tag: u32) -> R
 /// Back from `call_guest`'s function: pop its frame and return its result.
 fn guest_return(cpu: &mut Cpu, mem: &mut Memory) -> Result<(), Fault> {
     let sp = cpu.gpr[1];
-    if mem.r32(sp + 16)? == TAG_HUD {
-        mem.gx.set_hud_anchor(0);
+    match mem.r32(sp + 16)? {
+        TAG_HUD => mem.gx.set_hud_anchor(0),
+        TAG_NAME => return nametag::pass_drawn(cpu, mem),
+        TAG_PAUSE => return pause::chosen(cpu, mem),
+        _ => {}
     }
     cpu.gpr[3] = mem.r32(sp + 12)?;
     cpu.pc = mem.r32(sp + 8)? & !3;

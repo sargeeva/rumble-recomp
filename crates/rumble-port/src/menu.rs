@@ -6,12 +6,41 @@
 //! and the window hands it the next one (`capturing`, `bind_key`,
 //! `bind_pad`); Esc cancels.
 
+use crate::net::PortOpening;
 use crate::config::{Config, Multiplayer};
 use crate::controls::{Action, ControlsConfig, StickTurn};
 use crate::display::{Aspect, NamedResolution, Resolution};
 use winit::event::WindowEvent;
 use winit::keyboard::KeyCode;
 use winit::window::Window;
+
+/// What the window shows besides the config: gamepads, toasts, hosting.
+#[derive(Default)]
+pub struct Overlay {
+    /// The connected gamepads' names, in the order players are given to them.
+    pub pads: Vec<String>,
+    /// Messages shown for a few seconds over the game, newest last.
+    pub toasts: Vec<String>,
+    /// The password to host with, as typed (never saved).
+    pub password: String,
+    /// The session being hosted, if any.
+    pub hosting: Option<Hosting>,
+    /// Why hosting couldn't start.
+    pub host_error: Option<String>,
+    /// Multiplayer ends at the next Pokemon selection screen.
+    pub ending_multiplayer: bool,
+}
+
+/// A session being hosted.
+pub struct Hosting {
+    pub port: u16,
+    /// This PC's address on its local network.
+    pub lan: Option<std::net::IpAddr>,
+    /// Opening the port on the router.
+    pub port_opening: crate::net::PortOpening,
+    /// Player number and name, the host first.
+    pub players: Vec<(u8, String)>,
+}
 
 /// What the user did in the menu this frame.
 #[derive(Default)]
@@ -25,6 +54,11 @@ pub struct Actions {
     /// "Import save" / "Export save" were clicked.
     pub import_save: bool,
     pub export_save: bool,
+    /// "Start hosting" / "Stop hosting" were clicked.
+    pub start_hosting: bool,
+    pub stop_hosting: bool,
+    /// "End multiplayer" was clicked.
+    pub end_multiplayer: bool,
 }
 
 impl Actions {
@@ -241,7 +275,7 @@ impl Menu {
         target: &wgpu::TextureView,
         size: (u32, u32),
         cfg: &mut Config,
-        pads: &[String],
+        overlay: &mut Overlay,
         open: bool,
         fps: Option<&str>,
     ) -> Actions {
@@ -252,7 +286,7 @@ impl Menu {
             tab: &mut self.tab,
             capture: &mut self.capture,
             save_status: self.save_status.as_ref(),
-            pads,
+            overlay,
             actions: &mut actions,
             open,
             fps,
@@ -295,8 +329,7 @@ struct Page<'a> {
     tab: &'a mut Tab,
     save_status: Option<&'a (String, bool)>,
     capture: &'a mut Option<Capture>,
-    /// The connected gamepads' names, in the order players are given to them.
-    pads: &'a [String],
+    overlay: &'a mut Overlay,
     actions: &'a mut Actions,
     open: bool,
     fps: Option<&'a str>,
@@ -315,6 +348,22 @@ impl Page<'_> {
                         .corner_radius(4.0)
                         .inner_margin(egui::Margin::symmetric(8, 4))
                         .show(ui, |ui| ui.add(egui::Label::new(egui::RichText::new(fps).monospace().size(16.0).color(egui::Color32::WHITE)).extend()));
+                });
+        }
+        if !self.overlay.toasts.is_empty() {
+            egui::Area::new(egui::Id::new("toasts"))
+                .anchor(egui::Align2::CENTER_TOP, [0.0, 16.0])
+                .interactable(false)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    for toast in &self.overlay.toasts {
+                        egui::Frame::new()
+                            .fill(egui::Color32::from_black_alpha(190))
+                            .corner_radius(6.0)
+                            .inner_margin(egui::Margin::symmetric(14, 8))
+                            .show(ui, |ui| ui.add(egui::Label::new(egui::RichText::new(toast).size(20.0).color(egui::Color32::WHITE)).extend()));
+                        ui.add_space(6.0);
+                    }
                 });
         }
         if !self.open {
@@ -473,17 +522,17 @@ impl Page<'_> {
             });
             ui.end_row();
         });
-        if self.cfg.game.multiplayer == Multiplayer::Local {
+        if self.cfg.game.multiplayer != Multiplayer::Off {
             ui.add_space(8.0);
             ui.separator();
             ui.strong("Players");
             ui.label("The keyboard is player 1. Each gamepad plays as the player set here.");
-            if self.pads.is_empty() {
+            if self.overlay.pads.is_empty() {
                 ui.weak("No gamepads connected.");
             }
             let c = &mut self.cfg.controls;
             egui::Grid::new("players").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
-                for (i, name) in self.pads.iter().enumerate() {
+                for (i, name) in self.overlay.pads.iter().enumerate() {
                     ui.label(format!("{}. {name}", i + 1));
                     let mut player = c.pad_channel(i) as u8 + 1;
                     egui::ComboBox::from_id_salt(("pad_player", i)).selected_text(format!("Player {player}")).show_ui(ui, |ui| {
@@ -543,6 +592,74 @@ impl Page<'_> {
         self.actions.audio_changed |= changed;
     }
 
+    /// Hosting an online session: name, port and password, then who has
+    /// joined.
+    fn online(&mut self, ui: &mut egui::Ui, changed: &mut bool) {
+        let o = &mut self.cfg.online;
+        let hosting = self.overlay.hosting.is_some();
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.add_enabled_ui(!hosting, |ui| {
+                egui::Grid::new("online").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
+                    ui.label("Your name");
+                    *changed |= ui.add(egui::TextEdit::singleline(&mut o.name).char_limit(crate::net::MAX_NAME).hint_text("Shown to other players")).changed();
+                    ui.end_row();
+                    ui.label("Port");
+                    *changed |= ui.add(egui::DragValue::new(&mut o.port).range(1024..=65535)).changed();
+                    ui.end_row();
+                    ui.label("Password");
+                    ui.add(egui::TextEdit::singleline(&mut self.overlay.password).password(true).hint_text("Players need it to join"));
+                    ui.end_row();
+                });
+            });
+            ui.add_space(4.0);
+            match &self.overlay.hosting {
+                None => {
+                    let ready = !crate::net::clean_name(&o.name).is_empty() && !self.overlay.password.is_empty();
+                    if ui.add_enabled(ready, egui::Button::new("Start hosting")).clicked() {
+                        self.actions.start_hosting = true;
+                    }
+                    if !ready {
+                        ui.small("Set your name and a password to host.");
+                    }
+                    if let Some(e) = &self.overlay.host_error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, e);
+                    }
+                }
+                Some(h) => {
+                    if ui.button("Stop hosting").clicked() {
+                        self.actions.stop_hosting = true;
+                    }
+                    let lan = h.lan.map_or("this PC's address".to_string(), |ip| ip.to_string());
+                    ui.label(format!("Hosting on port {}. On your network, friends join at {lan}:{}.", h.port, h.port));
+                    match &h.port_opening {
+                        PortOpening::Trying => {
+                            ui.small("Opening the port on your router…");
+                        }
+                        PortOpening::Open(Some(public)) => {
+                            ui.label(format!("Port opened on your router. From elsewhere, friends join at {public}:{}.", h.port));
+                        }
+                        PortOpening::Open(None) => {
+                            ui.small(format!("Port opened on your router. From elsewhere, friends use your public IP address with port {}.", h.port));
+                        }
+                        PortOpening::Failed => {
+                            ui.small(format!(
+                                "Couldn't open the port on your router automatically (UPnP is off or unsupported). For friends elsewhere, forward TCP port {} to {lan} in your router's settings; they join at your public IP address with port {}.",
+                                h.port, h.port
+                            ));
+                        }
+                    }
+                    ui.add_space(4.0);
+                    for (player, name) in &h.players {
+                        ui.label(format!("Player {player}: {name}"));
+                    }
+                    if h.players.len() < 2 {
+                        ui.colored_label(egui::Color32::LIGHT_YELLOW, "Waiting for players…");
+                    }
+                }
+            }
+        });
+    }
+
     fn game(&mut self, ui: &mut egui::Ui) {
         let g = &mut self.cfg.game;
         let mut changed = ui.checkbox(&mut g.pause_in_background, "Pause while the window is in the background").changed();
@@ -558,8 +675,21 @@ impl Page<'_> {
             ui.label("Multiplayer");
             changed |= ui.radio_value(&mut g.multiplayer, Multiplayer::Off, "Off").changed();
             changed |= ui.radio_value(&mut g.multiplayer, Multiplayer::Local, "Local").changed();
+            changed |= ui.radio_value(&mut g.multiplayer, Multiplayer::Online, "Online").changed();
         });
-        ui.small("Local: extra gamepads play as players 2-4 (choose who plays as whom under Controls). The hub's multiplayer pedestal comes back when the game is restarted.");
+        ui.small("Local: extra gamepads play as players 2-4 (choose who plays as whom under Controls). Online: friends join over the network too. The hub's multiplayer pedestal comes back when the game is restarted.");
+        if g.multiplayer == Multiplayer::Online {
+            ui.add_space(4.0);
+            self.online(ui, &mut changed);
+        }
+        if self.cfg.game.multiplayer != Multiplayer::Off {
+            ui.add_space(4.0);
+            if self.overlay.ending_multiplayer {
+                ui.colored_label(egui::Color32::LIGHT_YELLOW, "Ending multiplayer: open the game's pause menu (+), choose Multiplayer, and pick your Pokémon. Players 2-4 are removed there.");
+            } else if ui.button("End multiplayer").on_hover_text("Continue alone: players 2-4 are removed at the next Pokémon selection").clicked() {
+                self.actions.end_multiplayer = true;
+            }
+        }
         self.actions.game_changed |= changed;
 
         ui.add_space(16.0);
